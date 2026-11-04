@@ -495,7 +495,7 @@ export default class ModUpdates extends View {
       .child(h_flex().gap(10).items_center()
         .child(v_flex().flex_1().min_w(0).gap(1)
           .child(h_flex().gap(8).items_center()
-            .child(div().flex_shrink().min_w(0).truncate().font_medium().text_color(t.foreground).child(m.title))
+            .child(div().flex_shrink_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(m.title))
             .child(div().flex_none().text_size(12).text_color(color).child(status)))
           .when(Boolean(detail), (el) => el.child(div().text_size(12).text_color(t.dim).child(detail))))
         .when(button !== null, (el) => el.child(button)))

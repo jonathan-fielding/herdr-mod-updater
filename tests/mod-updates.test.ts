@@ -62,6 +62,8 @@ class FakeInput {
   focus() {}
 }
 
+const NUMERIC = new Set(["flex_shrink", "flex_grow", "gap", "p", "px", "py", "pt", "pb", "mx", "mb", "h", "w", "min_w", "min_h", "rounded", "text_size", "opacity", "border"]);
+
 /** A stand-in element: any builder call chains; children, ids and clicks are kept for the test to read. */
 function el(...args: any[]) {
   const node: any = { args, kids: [] as any[], elementId: null, click: null };
@@ -73,6 +75,13 @@ function el(...args: any[]) {
       if (k === "when") return (c: any, f: (e: any) => any) => (c ? f(self) : self);
       if (k === "id") return (id: string) => ((n.elementId = id), self);
       if (k === "on_click") return (f: any) => ((n.click = f), self);
+      // Real GPUI throws on these without a number, which a forgiving stand-in would hide.
+      if (NUMERIC.has(String(k))) {
+        return (v: unknown) => {
+          if (typeof v !== "number") throw new Error(`${String(k)} expected a number, got ${v}`);
+          return self;
+        };
+      }
       return () => self;
     },
   });
