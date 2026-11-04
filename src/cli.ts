@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 import pkg from "../package.json" with { type: "json" };
+import { cachedCheck, checkMods, type CheckEntry, type CheckResult } from "./check.ts";
 import { HmodError, UsageError } from "./errors.ts";
 import { hashTree } from "./fsutil.ts";
 import { linkRefusal, listMods, scanMods } from "./inventory.ts";
@@ -10,6 +11,9 @@ import { sourceRef, updateSources } from "./store.ts";
 const HELP = `hmod ${pkg.version}: the mods in your Herdr app, and where they came from
 
   hmod list [--json]                              every installed mod and its status
+  hmod check [--cached] [--json]                  ask GitHub what's new, finding unlinked mods' sources
+                                                  by their content. --cached shows the last answer,
+                                                  with no network call
   hmod link <mod> <owner/repo> [--path mods/x] [--branch b] [--json]
                                                   record where a mod came from; what's on disk now
                                                   becomes the baseline for spotting local edits.
@@ -80,6 +84,18 @@ function listText(r: ListResult): string {
   return r.mods.map(modLine).join("\n") || "no mods installed";
 }
 
+function checkLine(m: CheckEntry): string {
+  const behind = m.commits_behind ? ` ${m.commits_behind}${m.commits_behind_capped ? "+" : ""} behind` : "";
+  const version = m.latest_version && m.latest_version !== m.installed_version ? ` -> ${m.latest_version}` : "";
+  const offers = m.suggestions.map((s) => `\n    maybe ${s.repo} ${s.path}: ${s.why}`);
+  return `${modLine(m)}${behind}${version}${offers.join("")}`;
+}
+
+function checkText(r: CheckResult): string {
+  const when = r.cached ? `\nas of ${r.last_checked ?? "never: run hmod check"}` : "";
+  return `${r.mods.map(checkLine).join("\n") || "no mods installed"}${when}`;
+}
+
 function parse(args: string[]) {
   try {
     return parseArgs({
@@ -89,6 +105,7 @@ function parse(args: string[]) {
         json: { type: "boolean" },
         path: { type: "string" },
         branch: { type: "string" },
+        cached: { type: "boolean" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
       },
@@ -111,7 +128,13 @@ async function main(args: string[]): Promise<void> {
     for (const n of names) if (values[n] !== undefined) throw new UsageError(`--${n} only goes with hmod link`);
   };
 
+  if (values.cached && command !== "check") throw new UsageError("--cached only goes with hmod check");
+
   switch (command) {
+    case "check":
+      noFlags("path", "branch");
+      if (rest.length) throw new UsageError("usage: hmod check [--cached] [--json]");
+      return print(await (values.cached ? cachedCheck() : checkMods()), checkText);
     case "list":
       noFlags("path", "branch");
       if (rest.length) throw new UsageError("usage: hmod list [--json]");
