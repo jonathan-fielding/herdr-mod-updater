@@ -7,6 +7,8 @@ export interface FakeCommit {
   sha: string;
   /** Path in the repo -> content, as of this commit. */
   files: Record<string, string>;
+  /** Lines added to the git tree of a mod folder, for what `files` can't say. Paths are relative to it. */
+  oddities?: Record<string, { path: string; mode: string; type: string; sha: string }[]>;
 }
 
 export interface FakeRepo {
@@ -36,6 +38,8 @@ export class FakeGitHub {
   limited: Response | (() => Response) | null = null;
   /** Answers every matching path with this status instead. */
   failing: { pattern: RegExp; status: number } | null = null;
+  /** Replaces the base64 of a blob, to stand in for bytes that don't match their SHA. */
+  corrupt: ((content: string) => string | null) | null = null;
 
   constructor(readonly repos: Record<string, FakeRepo>) {}
 
@@ -52,7 +56,7 @@ export class FakeGitHub {
     this.requests.push({ method: req.method, url, headers: req.headers });
     if (this.limited) return typeof this.limited === "function" ? this.limited() : (this.limited.clone() as Response);
     if (this.failing?.pattern.test(url.pathname)) return new Response("broken", { status: this.failing.status });
-    const res = this.route(url);
+    const res = this.route(url, req.method);
     if (!res.ok) return json({ message: "Not Found" }, {}, res.status);
     if (res.bodyJson === undefined) return new Response(null, { status: res.status });
     const tag = `"${Bun.hash(JSON.stringify(res.bodyJson))}"`;
@@ -63,7 +67,7 @@ export class FakeGitHub {
     return json(res.bodyJson, { etag: tag });
   }
 
-  private route(url: URL): { ok: boolean; status: number; bodyJson?: unknown } {
+  private route(url: URL, method: string): { ok: boolean; status: number; bodyJson?: unknown } {
     const ok = (bodyJson: unknown) => ({ ok: true, status: 200, bodyJson });
     const missing = { ok: false, status: 404 };
     if (url.pathname === "/search/repositories") return ok({ items: this.search(url.searchParams.get("q") ?? "") });
@@ -80,19 +84,20 @@ export class FakeGitHub {
     }
     if (rest.startsWith("git/blobs/")) {
       const want = rest.slice("git/blobs/".length);
-      const found = repo.commits.some((c) => Object.values(c.files).some((f) => blob(f) === want));
-      return found ? { ok: true, status: 200 } : missing;
+      const found = repo.commits.flatMap((c) => Object.values(c.files)).find((f) => blob(f) === want);
+      if (found === undefined) return missing;
+      if (method === "HEAD") return { ok: true, status: 200 };
+      return ok({ content: this.corrupt?.(found) ?? Buffer.from(found).toString("base64"), encoding: "base64" });
     }
     if (rest.startsWith("git/trees/")) {
       const want = rest.slice("git/trees/".length);
+      const recursive = url.searchParams.get("recursive") === "1";
+      const atCommit = repo.commits.find((c) => c.sha === want);
+      if (atCommit) return ok(this.gitTree(atCommit, "", false));
       for (const c of repo.commits) {
         for (const dir of this.dirs(c)) {
           if (this.dirSha(c, dir) === want) {
-            const prefix = `${dir}/`;
-            const tree = Object.entries(c.files)
-              .filter(([p]) => p.startsWith(prefix))
-              .map(([p, content]) => ({ path: p.slice(prefix.length), type: "blob", sha: blob(content) }));
-            return ok({ truncated: false, tree });
+            return ok(this.gitTree(c, dir, recursive));
           }
         }
       }
@@ -111,6 +116,17 @@ export class FakeGitHub {
       return entries.length ? ok(entries) : missing;
     }
     return missing;
+  }
+
+  /** A folder as git/trees answers: flat, or one level with its subfolders as "tree" lines. */
+  private gitTree(c: FakeCommit, dir: string, recursive: boolean) {
+    const line = (path: string, content: string) => ({ path, mode: "100644", type: "blob", sha: blob(content) });
+    const tree = recursive
+      ? Object.entries(c.files)
+          .filter(([p]) => p.startsWith(`${dir}/`))
+          .map(([p, content]) => line(p.slice(dir.length + 1), content))
+      : this.list(c, dir).map((e) => ({ path: e.name, mode: e.type === "dir" ? "040000" : "100644", type: e.type === "dir" ? "tree" : "blob", sha: e.sha }));
+    return { truncated: false, tree: [...tree, ...(recursive ? (c.oddities?.[dir] ?? []) : [])] };
   }
 
   private search(q: string): { full_name: string; name: string }[] {
@@ -147,7 +163,7 @@ export class FakeGitHub {
   }
 
   private list(c: FakeCommit, dir: string) {
-    const prefix = `${dir}/`;
+    const prefix = dir ? `${dir}/` : "";
     const seen = new Map<string, { name: string; type: string; sha: string }>();
     for (const [p, content] of Object.entries(c.files)) {
       if (!p.startsWith(prefix)) continue;
