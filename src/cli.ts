@@ -5,6 +5,7 @@ import { cachedCheck, checkMods, type CheckEntry, type CheckResult } from "./che
 import { HmodError, UsageError } from "./errors.ts";
 import { hashTree } from "./fsutil.ts";
 import { linkRefusal, listMods, scanMods } from "./inventory.ts";
+import { installMod } from "./modinstall.ts";
 import { updateAll, updateOne, type UpdateEvent, type UpdateResult } from "./update.ts";
 import type { ErrorResult, LinkResult, ListResult, ModEntry, SourceRef, UnlinkResult } from "./model.ts";
 import { sourceRef, updateSources } from "./store.ts";
@@ -26,6 +27,7 @@ const HELP = `hmod ${pkg.version}: the mods in your Herdr app, and where they ca
   hmod update --all [--json]                      update every mod with an update, one at a time.
                                                   Modified, unlinked and error mods are skipped.
                                                   --json prints one line per step of progress
+  hmod mod install [--json]                       put Mod updates in Herdr's mods folder
   hmod --version
 
 Data: ~/.herdr-mod-updater ($HMOD_HOME overrides). Herdr: ~/.config/herdr-app ($HERDR_APP_HOME overrides).
@@ -200,6 +202,11 @@ async function main(args: string[]): Promise<void> {
       const result = await updateOne(mod, values.force === true);
       if (!result.ok) process.exitCode = 1;
       return print(result, updateText);
+    }
+    case "mod": {
+      noFlags("path", "branch");
+      if (rest.length !== 1 || rest[0] !== "install") throw new UsageError("usage: hmod mod install [--json]");
+      return print(installMod(), (r) => r.lines.join("\n"));
     }
     default:
       throw new UsageError(`unknown command: ${command} (try hmod --help)`);

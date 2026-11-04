@@ -1,0 +1,6 @@
+{
+  "global": {
+    "cmd-shift-u": "mod.open:mod-updater",
+    "ctrl-shift-u": "mod.open:mod-updater"
+  }
+}
