@@ -80,8 +80,9 @@ aligned, with any error above them in `blocked`.
 ## How it behaves
 
 It shows no agent statuses. Its statuses are the mods': `herdr`, `up_to_date`, `update_available`,
-`modified`, `unlinked` and `error`, as the rows above show them. `mod-updater` itself is `unlinked`
-and is never shown.
+`modified`, `unlinked` and `error`, as the rows above show them. An installed `mod-updater` is
+treated like hcoord: Up to date, or Update available when its clone's origin is ahead. A plain copy
+that isn't set up is `unlinked` and is never shown.
 
 - **Opening** reads `hmod check --cached --json`, which needs no network, so the list appears at once.
   If a job is running, the dialog picks it up. If not, and the last check was more than 6 hours ago or
@@ -144,7 +145,7 @@ and is never shown.
   `unlink`, `update <mod> [--force]`, `update --all` and `mod install`, each with `--json`.
   - Comparing files: git blob SHAs of everything except dotfiles, `gpui-kit.d.ts` and `jsconfig.json`.
   - Inventory: folders in `<herdr home>/mods`. Keys of `installed.json` without a `:` are `herdr`. A
-    `.hcoord-installed` file marks hcoord. `cloned_from` in `mod.json` marks a `mod.clone` copy.
+    `.hcoord-installed` file marks hcoord, and `.hmod-installed` this mod. `cloned_from` in `mod.json` marks a `mod.clone` copy.
   - Finding a source: GitHub search for `<name or title> topic:herdr-mod fork:true`, up to 20 repos,
     best name first. For each, the folder under `mods/` that fits, a `HEAD` on the blobs to skip repos
     with no matching file, then the 30 newest commits to that folder. One repo with every file equal
@@ -158,23 +159,25 @@ and is never shown.
 - **What this mod reaches.** Before adding it, tell the person:
   - Network: the mod makes no network requests itself; the setup link opens in the browser. The CLI
     it runs reads `https://api.github.com` to search repos and fetch mods' files, sending the mods'
-    names and titles and files' SHAs. For hcoord it runs `git fetch` and `git pull` against the
-    clone's origin.
+    names and titles and files' SHAs. For hcoord and this mod it runs `git fetch` and `git pull`
+    against the clone's origin.
   - Programs: the mod's `exec` runs `bun` with the hmod CLI, and `/bin/sh` for jobs and `kill -0`. It
-    doesn't use `hc`. The CLI runs `gh auth token`, `herdr-app check`, `git`, and for hcoord the
-    command in that mod's `hcoord-path.js` with `mod install`.
+    doesn't use `hc`. The CLI runs `gh auth token`, `herdr-app check`, `git`, and for hcoord and this
+    mod the command in `hcoord-path.js` or `hmod-path.js` with `mod install`.
   - Files outside its folder: the mod reads `~/.herdr-mod-updater/mod-job.log`, and its shell writes
     it. The CLI reads `~/.config/herdr-app/installed.json`, reads and writes other mods' folders in
     `~/.config/herdr-app/mods/` (that's the point of it: **it replaces their files with code from
     GitHub**, which then runs in the app), reads and writes `~/.herdr-mod-updater/`, and pulls in the
-    person's hcoord clone. `hmod mod install` writes `mods/mod-updater/`.
+    person's hcoord clone and its own. `hmod mod install` writes `mods/mod-updater/`.
   - It uses the person's GitHub token from `gh`, sent only to GitHub, not stored. It doesn't watch
     any folders.
 - **`hmod-path.js`**. The repo's copy says `HMOD = null`, so a plain copy loads, shows the notice and
   runs nothing. `hmod mod install` writes the exact bun and `cli.ts` into the installed copy only, with
   `HMOD_DATA`. `exec` takes no environment, so non-default homes go through `/usr/bin/env` in the argv.
-- **Linking `mod-updater` to its own repo breaks it**: an update puts the blank `hmod-path.js` over
-  the real one, and only `hmod mod install` brings it back. The CLI doesn't refuse this.
+- **Never let GitHub's copy land on an installed `mod-updater`**: the blank `hmod-path.js` would replace
+  the real one. `.hmod-installed` makes it clone-installed, so linking it is refused and an update pulls
+  the clone and runs `hmod mod install`. That install ignores a shell's `HMOD_HOME`, so only the
+  generated argv decides the data folder.
 - **A link's baseline is what's on disk**, edits included. Those edits aren't `modified`, and an update
   replaces them without asking, keeping a backup. A fresh build could fetch the commit's files instead.
 - **`--json` shapes are a contract** between the CLI and the mod: add fields, don't rename them.
@@ -214,6 +217,7 @@ and is never shown.
 - A new version that fails after installing is rolled back: the old files are back.
 - Update all updates each mod in turn. With one failing, the others still update and the card counts both.
 - Closing the dialog mid-update and reopening it shows the same job going, and it finishes.
+- `hmod link mod-updater owner/repo` on an installed copy is refused and records nothing.
 - With hcoord installed from a clone, Update runs `git pull --ff-only` and `hcoord mod install`, and a clone
   with uncommitted changes is refused with nothing changed.
 - `bun test` and `tsc --noEmit` pass, and neither touches the real homes or the network.

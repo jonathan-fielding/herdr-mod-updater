@@ -112,7 +112,7 @@ hmod --version
 
 If `hmod` isn't found, add `~/.local/bin` to your `PATH` (`herdr-app` usually lives there too).
 
-Keep the clone where it is. The dialog runs hmod from this folder.
+Keep the clone where it is. The dialog runs hmod from this folder, and updating hmod pulls into it.
 
 ### 3. Install the dialog
 
@@ -147,7 +147,7 @@ To finish, do steps 1 and 2 above, then run `hmod mod install`. It takes over th
 
 ### Updating
 
-hmod doesn't update itself. Pull and install again:
+Mod updates lists itself like any other mod. Click **Update** on its row, which pulls your clone and reinstalls the dialog, or do the same by hand:
 
 ```sh
 cd herdr-mod-updater
@@ -155,7 +155,7 @@ git pull
 hmod mod install
 ```
 
-Don't link `mod-updater` to its own repo: see [Limits](#limits).
+The dialog and the CLI have to stay in step, so it's never copied from GitHub, and it can't be linked. The clone needs to be clean, on a branch that tracks origin. If the new code can't install, the error says how to go back.
 
 ### Removing it
 
@@ -197,7 +197,6 @@ That removes the dialog, hmod's records and backups, and the command. Your other
 
 - **Linking makes what's on disk the baseline.** That includes any edits you've made, so hmod stops seeing them as edits. If they differ from the repo, the mod shows **Update available**, and the next update replaces them with no question asked, even from **Update all**. The backup still has them. To keep your edits, don't update that mod, or copy them back from the backup afterwards.
 - **Automatic matching only looks at repos with the `herdr-mod` topic**, up to 20 for each mod, at `mods/<name>/` on the default branch, in the 30 newest commits that touched that folder. For anything else, link by hand: `--path` takes any folder, and `--branch` any branch (the dialog's link box always uses the default branch).
-- **Don't link `mod-updater` to its own repo.** hmod doesn't stop you, but an update then replaces the installed `hmod-path.js` with the repo's blank one, and the dialog stops working until you run `hmod mod install` again. Update it the way [Updating](#updating) says.
 - **`keys.json` is never merged.** hmod tells you when a repo's `keys.json` changed. Add the keys you want yourself.
 - **`RECIPE.md` and `preview.png` aren't installed.** Only the mod's own folder is.
 - **Mods with symlinks or git submodules are refused.** A mod too big for GitHub to list in one go fails with an error.
@@ -221,7 +220,7 @@ Any file the update added stays until you delete it. The mod will then show as *
 
 ### What about hcoord?
 
-[herdr-coordinator](https://github.com/jonathan-fielding/herdr-project-coordinator)'s mod has to stay in step with its CLI, so hmod never copies GitHub files over it. Its **Update** runs `git pull --ff-only` in your hcoord clone, then `hcoord mod install`. It won't start if the clone has uncommitted changes, isn't on a branch, or doesn't track origin. Other mods installed from a clone would need an entry in `src/inventory.ts` and `src/adapters.ts`.
+[herdr-coordinator](https://github.com/jonathan-fielding/herdr-project-coordinator)'s mod has to stay in step with its CLI, so hmod never copies GitHub files over it. Its **Update** runs `git pull --ff-only` in your hcoord clone, then `hcoord mod install`. It won't start if the clone has uncommitted changes, isn't on a branch, or doesn't track origin. hmod updates its own mod the same way. Other mods installed from a clone would need an entry in `src/inventory.ts` and `src/adapters.ts`.
 
 ### Why can't I update a mod that ships with Herdr?
 
@@ -229,7 +228,7 @@ Mods listed in Herdr's `installed.json` update with the app, so anything hmod pu
 
 ### Does anything leave my machine?
 
-hmod reads from `api.github.com`, and for a linked mod downloads its files from there. If you're signed in to `gh`, requests carry that token, which hmod asks `gh` for on each run and doesn't store. Searching sends your mods' names and titles, and asking whether a repo has a file sends that file's SHA. For hcoord it runs `git fetch` and `git pull` against the clone's origin. The dialog itself makes no network requests.
+hmod reads from `api.github.com`, and for a linked mod downloads its files from there. If you're signed in to `gh`, requests carry that token, which hmod asks `gh` for on each run and doesn't store. Searching sends your mods' names and titles, and asking whether a repo has a file sends that file's SHA. For hcoord and for its own mod it runs `git fetch` and `git pull` against the clone's origin. The dialog itself makes no network requests.
 
 ### How do I check it's working?
 
@@ -278,7 +277,7 @@ Commands exit non-zero on failure. `hmod update --all --json` prints one line pe
 ### How it's built
 
 - `mods/mod-updater/`: the dialog, a Herdr mod. It reads `hmod check --cached --json` and calls the CLI for everything else. Long jobs run as a detached `hmod` writing to `mod-job.log`, which the dialog reads every half second, because a mod's `exec` stops a program after 30 seconds. `hmod-path.js` holds a blank default there, and `hmod mod install` writes the real path into the installed copy only.
-- `src/`: the `hmod` CLI. `inventory.ts` works out local status, `match.ts` finds sources by content, `check.ts` asks GitHub, `update.ts` installs and rolls back, and `adapters.ts` handles hcoord.
+- `src/`: the `hmod` CLI. `inventory.ts` works out local status, `match.ts` finds sources by content, `check.ts` asks GitHub, `update.ts` installs and rolls back, and `adapters.ts` handles hcoord and hmod's own mod.
 - `tests/`: the suite never touches your real homes or the network. It uses temp homes and a stand-in GitHub (`tests/fake-github.ts`).
 
 To work on it, install the dev dependencies first:
