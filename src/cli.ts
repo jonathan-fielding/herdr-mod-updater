@@ -5,6 +5,7 @@ import { cachedCheck, checkMods, type CheckEntry, type CheckResult } from "./che
 import { HmodError, UsageError } from "./errors.ts";
 import { hashTree } from "./fsutil.ts";
 import { linkRefusal, listMods, scanMods } from "./inventory.ts";
+import { updateAll, updateOne, type UpdateEvent, type UpdateResult } from "./update.ts";
 import type { ErrorResult, LinkResult, ListResult, ModEntry, SourceRef, UnlinkResult } from "./model.ts";
 import { sourceRef, updateSources } from "./store.ts";
 
@@ -20,6 +21,11 @@ const HELP = `hmod ${pkg.version}: the mods in your Herdr app, and where they ca
                                                   --path defaults to mods/<mod>, --branch to the
                                                   repo's default
   hmod unlink <mod> [--json]                      forget where a mod came from
+  hmod update <mod> [--force] [--json]            install the newest version of a mod. Local edits stop
+                                                  it, unless --force: a backup is made either way
+  hmod update --all [--json]                      update every mod with an update, one at a time.
+                                                  Modified, unlinked and error mods are skipped.
+                                                  --json prints one line per step of progress
   hmod --version
 
 Data: ~/.herdr-mod-updater ($HMOD_HOME overrides). Herdr: ~/.config/herdr-app ($HERDR_APP_HOME overrides).
@@ -96,6 +102,24 @@ function checkText(r: CheckResult): string {
   return `${r.mods.map(checkLine).join("\n") || "no mods installed"}${when}`;
 }
 
+const short = (commit: string | null) => commit?.slice(0, 7) ?? "?";
+
+function updateText(r: UpdateResult): string {
+  if (!r.ok) return `${r.mod}: ${r.outcome.replace("_", " ")}: ${r.error}`;
+  if (r.outcome === "up_to_date") return `${r.mod}: up to date`;
+  const from = r.from_version ?? short(r.from_commit);
+  const to = r.to_version ?? short(r.to_commit);
+  const backup = r.backup ? ` (backup: ${r.backup})` : "";
+  return [`${r.mod}: updated ${from} -> ${to}${backup}`, ...r.notes.map((n) => `  ${n}`)].join("\n");
+}
+
+function updateEventText(e: UpdateEvent): string | null {
+  if (e.event === "result") return updateText(e.result);
+  if (e.event !== "plan") return null;
+  const skips = e.skipped.map((s) => `${s.mod}: skipped: ${s.reason}`);
+  return [...skips, ...(e.mods.length ? [] : ["nothing to update"])].join("\n") || null;
+}
+
 function parse(args: string[]) {
   try {
     return parseArgs({
@@ -106,6 +130,8 @@ function parse(args: string[]) {
         path: { type: "string" },
         branch: { type: "string" },
         cached: { type: "boolean" },
+        force: { type: "boolean" },
+        all: { type: "boolean" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
       },
@@ -129,6 +155,9 @@ async function main(args: string[]): Promise<void> {
   };
 
   if (values.cached && command !== "check") throw new UsageError("--cached only goes with hmod check");
+  for (const flag of ["force", "all"] as const) {
+    if (values[flag] && command !== "update") throw new UsageError(`--${flag} only goes with hmod update`);
+  }
 
   switch (command) {
     case "check":
@@ -153,6 +182,24 @@ async function main(args: string[]): Promise<void> {
       const [mod, ...more] = rest;
       if (!mod || more.length) throw new UsageError("usage: hmod unlink <mod> [--json]");
       return print(await unlink(mod), (r) => `${r.unlinked ? "unlinked" : "wasn't linked"}: ${r.mod}`);
+    }
+    case "update": {
+      noFlags("path", "branch");
+      const [mod, ...more] = rest;
+      if (more.length || (values.all === true) === (mod !== undefined) || (values.all && values.force)) {
+        throw new UsageError("usage: hmod update <mod> [--force] [--json] or hmod update --all [--json]");
+      }
+      if (mod === undefined) {
+        const { ok } = await updateAll((event) => {
+          const line = values.json ? JSON.stringify(event) : updateEventText(event);
+          if (line !== null) process.stdout.write(`${line}\n`);
+        });
+        if (!ok) process.exitCode = 1;
+        return;
+      }
+      const result = await updateOne(mod, values.force === true);
+      if (!result.ok) process.exitCode = 1;
+      return print(result, updateText);
     }
     default:
       throw new UsageError(`unknown command: ${command} (try hmod --help)`);

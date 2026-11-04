@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HmodError } from "./errors.ts";
-import { atomicWrite, isIgnored } from "./fsutil.ts";
+import { atomicWrite, gitBlobSha, isIgnored } from "./fsutil.ts";
 import { hmodHome } from "./paths.ts";
 
 export const GITHUB_API = "https://api.github.com";
@@ -58,6 +58,19 @@ interface ContentEntry {
   name: string;
   type: string;
   sha: string;
+}
+
+/** One line of a git tree, as GitHub gives it: `mode` is how symlinks show up, type "commit" submodules. */
+export interface TreeEntry {
+  path: string;
+  mode: string;
+  type: string;
+  sha: string;
+}
+
+interface TreeResponse {
+  truncated: boolean;
+  tree: TreeEntry[];
 }
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -256,6 +269,45 @@ export class GitHub {
       }
     }
     return files;
+  }
+
+  /**
+   * Everything in a folder at a commit, with nothing left out and paths relative to it; null if it
+   * wasn't there. Unlike the contents API, this says which entries are symlinks and submodules.
+   */
+  async folderEntries(repo: string, path: string, commit: string): Promise<TreeEntry[] | null> {
+    let sha = commit;
+    for (const part of path.split("/")) {
+      const level = await this.get<TreeResponse>(`/repos/${repo}/git/trees/${sha}`, true);
+      const next = level?.tree.find((e) => e.path === part && e.type === "tree");
+      if (!next) return null;
+      sha = next.sha;
+    }
+    const tree = await this.get<TreeResponse>(`/repos/${repo}/git/trees/${sha}?recursive=1`, true);
+    if (!tree) return null;
+    if (tree.truncated) throw new GitHubError(`can't read ${path} in ${repo}: it's too big`);
+    return tree.tree;
+  }
+
+  /** The blob SHA of a file at the root of the repo at a commit, or null. */
+  async rootFile(repo: string, name: string, commit: string): Promise<string | null> {
+    const root = await this.get<TreeResponse>(`/repos/${repo}/git/trees/${commit}`, true);
+    return root?.tree.find((e) => e.path === name && e.type === "blob")?.sha ?? null;
+  }
+
+  /**
+   * A file's bytes, checked against its SHA. Not cached: the cache is for answers, not mods' files
+   * (and hasBlob keeps its own note under this URL).
+   */
+  async blob(repo: string, sha: string): Promise<Uint8Array> {
+    const path = `/repos/${repo}/git/blobs/${sha}`;
+    const res = await this.request("GET", path);
+    if (!res.ok) throw new GitHubError(`GitHub said ${res.status} for ${path}`);
+    const { content, encoding } = (await res.json()) as { content?: string; encoding?: string };
+    if (typeof content !== "string" || encoding !== "base64") throw new GitHubError(`GitHub sent ${path} in a form hmod can't read`);
+    const bytes = Buffer.from(content, "base64");
+    if (gitBlobSha(bytes) !== sha) throw new GitHubError(`what GitHub sent for ${path} doesn't match its SHA`);
+    return bytes;
   }
 
   /** The `version` in a folder's mod.json at a commit, or null if there isn't one. */
