@@ -1,0 +1,19 @@
+{
+  "name": "herdr-mod-updater",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "A Herdr desktop-app mod that lists your installed mods, checks which have updates and installs them.",
+  "bin": {
+    "hmod": "src/cli.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}
