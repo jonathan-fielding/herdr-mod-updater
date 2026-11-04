@@ -21,6 +21,7 @@ export interface CloneAdapter {
 /** To support another such mod, add it here. */
 export const CLONE_ADAPTERS: CloneAdapter[] = [
   { id: "hcoord", marker: ".hcoord-installed", generated: ["hcoord-path.js"], update: "hcoord mod install" },
+  { id: "hmod", marker: ".hmod-installed", generated: ["hmod-path.js"], update: "hmod mod install" },
 ];
 
 /** One folder of the mods folder, before its status is worked out. */
