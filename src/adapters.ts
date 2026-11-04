@@ -21,11 +21,16 @@ interface Installer {
   file: string;
   constant: string;
   args: string[];
+  /** Left out of the install's environment: the generated argv alone decides these, or a shell's value would be written into the mod. */
+  unset?: string[];
+  /** hmod updating itself: a failed install leaves hmod running on code that may not start. */
+  self?: boolean;
 }
 
 /** Keyed by CloneAdapter id. */
 const INSTALLERS: Record<string, Installer> = {
   hcoord: { file: "hcoord-path.js", constant: "HCOORD", args: ["mod", "install"] },
+  hmod: { file: "hmod-path.js", constant: "HMOD", args: ["mod", "install"], unset: ["HMOD_HOME"], self: true },
 };
 
 const GIT_TIMEOUT_MS = 120_000;
@@ -39,15 +44,17 @@ export interface Ran {
 }
 
 /** Runs a program with no stdin, so it can't sit waiting for an answer. Never throws. */
-export async function run(argv: string[], options: { cwd?: string; timeoutMs: number }): Promise<Ran> {
+export async function run(argv: string[], options: { cwd?: string; timeoutMs: number; unset?: string[] }): Promise<Ran> {
   try {
+    const env: Record<string, string | undefined> = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+    for (const key of options.unset ?? []) delete env[key];
     const p = Bun.spawn(argv, {
       cwd: options.cwd,
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: options.timeoutMs,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      env,
     });
     const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
     const output = stderr.trim() || stdout.trim() || (code === 0 ? "" : `exit code ${code}`);
@@ -130,10 +137,15 @@ export async function updateClone(
   if (to_commit === from_commit && !stale) return { root, branch, from_commit, to_commit, installed: false };
 
   step("installing");
-  const install = await run([...argv, ...installer.args], { cwd: root, timeoutMs: INSTALL_TIMEOUT_MS });
+  const install = await run([...argv, ...installer.args], { cwd: root, timeoutMs: INSTALL_TIMEOUT_MS, unset: installer.unset });
   if (!install.ok) {
-    const pulled = to_commit === from_commit ? "" : ` (${root} is now at ${to_commit.slice(0, 7)}: the pull stands)`;
-    throw new HmodError(`\`${adapter.update}\` failed${pulled}: ${install.output}`);
+    const moved = to_commit !== from_commit;
+    const pulled = moved ? ` (${root} is now at ${to_commit.slice(0, 7)}: the pull stands)` : "";
+    // The clone was clean before the pull, so going back loses nothing.
+    const self = moved && installer.self
+      ? `. The installed mod is still the old version, but it runs hmod from the new code. To go back: \`git -C ${root} reset --hard ${from_commit.slice(0, 7)}\``
+      : "";
+    throw new HmodError(`\`${adapter.update}\` failed${pulled}${self}: ${install.output}`);
   }
   return { root, branch, from_commit, to_commit, installed: true };
 }
