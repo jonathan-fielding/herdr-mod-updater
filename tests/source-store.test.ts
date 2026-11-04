@@ -1,0 +1,190 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { gitBlobSha, hashTree } from "../src/fsutil.ts";
+import type { LinkResult, Sources, UnlinkResult } from "../src/model.ts";
+import { errorOf, fixtureHome, type Homes } from "./helpers.ts";
+
+let h: Homes;
+beforeEach(() => {
+  h = fixtureHome();
+});
+afterEach(() => h.cleanup());
+
+const sources = (): Sources => JSON.parse(readFileSync(join(h.hmod, "sources.json"), "utf8"));
+
+describe("hmod link", () => {
+  test("records the source and hashes what's on disk, skipping injected files", () => {
+    const r = h.json<LinkResult>("link", "quota", "someone/herdr-quota");
+    expect(r).toEqual({
+      ok: true,
+      mod: "quota",
+      linked: true,
+      source: { repo: "someone/herdr-quota", path: "mods/quota", branch: null, commit: null },
+    });
+    const record = sources().quota!;
+    expect(record.repo).toBe("someone/herdr-quota");
+    expect(Object.keys(record.files).sort()).toEqual(["main.js", "mod.json"]);
+    expect(record.files["main.js"]).toBe(gitBlobSha(Buffer.from("third party")));
+  });
+
+  test("takes --path and --branch, and the local name may differ from the repo's", () => {
+    h.json("link", "quota", "someone/herdr-quota", "--path", "mods/herdr-quota/", "--branch", "dev");
+    expect(sources().quota).toMatchObject({ path: "mods/herdr-quota", branch: "dev" });
+  });
+
+  test("a linked mod with no edits lists as up to date, unchecked", () => {
+    h.json("link", "quota", "someone/herdr-quota");
+    expect(h.entry("quota")).toMatchObject({
+      status: "up_to_date",
+      remote_checked: false,
+      source: { repo: "someone/herdr-quota", path: "mods/quota", branch: null, commit: null },
+    });
+    expect((h.entry("quota").source as any).files).toBeUndefined();
+  });
+
+  test("a local edit, addition or removal lists as modified", () => {
+    h.json("link", "quota", "someone/herdr-quota");
+    const dir = join(h.herdr, "mods", "quota");
+    writeFileSync(join(dir, "main.js"), "edited");
+    writeFileSync(join(dir, "extra.js"), "new");
+    rmSync(join(dir, "mod.json"));
+    expect(h.entry("quota")).toMatchObject({ status: "modified", changed: ["extra.js", "main.js", "mod.json"] });
+  });
+
+  test("files Herdr injects later don't count as edits", () => {
+    h.json("link", "no-mod-json", "someone/thing");
+    const dir = join(h.herdr, "mods", "no-mod-json");
+    writeFileSync(join(dir, "gpui-kit.d.ts"), "// injected");
+    writeFileSync(join(dir, "jsconfig.json"), "{}");
+    writeFileSync(join(dir, ".DS_Store"), "x");
+    expect(h.entry("no-mod-json").status).toBe("up_to_date");
+  });
+
+  test("linking the same thing again changes nothing", () => {
+    h.json("link", "quota", "someone/herdr-quota");
+    writeFileSync(join(h.herdr, "mods", "quota", "main.js"), "edited");
+    expect(h.json<LinkResult>("link", "quota", "someone/herdr-quota").linked).toBe(false);
+    expect(h.entry("quota").status).toBe("modified");
+  });
+
+  test("linking somewhere else is refused until unlinked", () => {
+    h.json("link", "quota", "someone/herdr-quota");
+    const r = h.run("link", "quota", "other/herdr-quota", "--json");
+    expect(r.code).toBe(1);
+    expect(errorOf(r)).toContain("already linked");
+    expect(sources().quota!.repo).toBe("someone/herdr-quota");
+  });
+
+  test.each([
+    ["agents", "ships with Herdr"],
+    ["hcoord", "local clone"],
+    ["my-files", "clone of files"],
+    ["missing", "no mod called"],
+  ])("refuses %s", (mod, why) => {
+    const r = h.run("link", mod, "someone/repo", "--json");
+    expect(r.code).toBe(1);
+    expect(errorOf(r)).toContain(why);
+    expect(existsSync(join(h.hmod, "sources.json"))).toBe(false);
+  });
+
+  test.each([
+    [["quota", "not-a-repo"]],
+    [["quota", "a/b/c"]],
+    [["quota", "a/.."]],
+    [["quota", "a/b", "--path", "../x"]],
+    [["quota", "a/b", "--path", "/etc"]],
+    [["quota", "a/b", "--branch", "-x"]],
+    [["quota", "a/b", "--branch", "a..b"]],
+    [["quota"]],
+  ])("bad usage: %j", (args) => {
+    expect(h.run("link", ...args, "--json").code).toBe(2);
+  });
+
+  test("a mod name can't reach outside the mods folder", () => {
+    expect(h.run("link", "../installed.json", "a/b", "--path", "x", "--json").code).toBe(1);
+  });
+});
+
+describe("hmod unlink", () => {
+  test("forgets the source; the mod is unlinked again and its files stay", () => {
+    h.json("link", "quota", "someone/herdr-quota");
+    expect(h.json<UnlinkResult>("unlink", "quota")).toEqual({ ok: true, mod: "quota", unlinked: true });
+    expect(sources().quota).toBeUndefined();
+    expect(h.entry("quota").status).toBe("unlinked");
+    expect(existsSync(join(h.herdr, "mods", "quota", "main.js"))).toBe(true);
+  });
+
+  test("a mod that wasn't linked is fine", () => {
+    expect(h.json<UnlinkResult>("unlink", "quota").unlinked).toBe(false);
+  });
+
+  test("works for a mod that's been uninstalled", () => {
+    h.json("link", "quota", "someone/herdr-quota");
+    rmSync(join(h.herdr, "mods", "quota"), { recursive: true });
+    expect(h.json<UnlinkResult>("unlink", "quota").unlinked).toBe(true);
+  });
+});
+
+describe("sources.json", () => {
+  test("parallel links all survive, leaving no lock or temp file", async () => {
+    const names = Array.from({ length: 8 }, (_, i) => `m${i}`);
+    for (const n of names) h.mod(n, { "main.js": n });
+    const cli = resolve(import.meta.dir, "..", "src", "cli.ts");
+    const procs = names.map((n) =>
+      Bun.spawn(["bun", cli, "link", n, `someone/${n}`], {
+        env: { ...process.env, HERDR_APP_HOME: h.herdr, HMOD_HOME: h.hmod },
+        stdout: "ignore",
+      }),
+    );
+    expect(await Promise.all(procs.map((p) => p.exited))).toEqual(names.map(() => 0));
+    expect(Object.keys(sources()).sort()).toEqual(names);
+    expect(readdirSync(h.hmod)).toEqual(["sources.json"]);
+  });
+
+  test("a mod called like an Object property is an ordinary name", () => {
+    h.mod("constructor", { "main.js": "x" });
+    expect(h.entry("constructor").status).toBe("unlinked");
+    h.json("link", "constructor", "someone/thing");
+    expect(h.entry("constructor").status).toBe("up_to_date");
+  });
+
+  test("corrupt: says so rather than treating every mod as unlinked", () => {
+    mkdirSync(h.hmod, { recursive: true });
+    writeFileSync(join(h.hmod, "sources.json"), "{ nope");
+    const r = h.run("list", "--json");
+    expect(r.code).toBe(1);
+    expect(errorOf(r)).toContain("sources.json");
+    expect(h.run("unlink", "quota", "--json").code).toBe(1);
+    expect(readFileSync(join(h.hmod, "sources.json"), "utf8")).toBe("{ nope");
+  });
+
+  test("a bad entry is refused", () => {
+    mkdirSync(h.hmod, { recursive: true });
+    writeFileSync(join(h.hmod, "sources.json"), `{ "quota": { "repo": 1 } }`);
+    expect(errorOf(h.run("list", "--json"))).toContain(`bad entry for "quota"`);
+  });
+});
+
+describe("hashing", () => {
+  test("matches git's blob ids", () => {
+    expect(gitBlobSha(new Uint8Array())).toBe("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+    expect(gitBlobSha(Buffer.from("hello\n"))).toBe("ce013625030ba8dba906f756967f9e9ca394464a");
+  });
+
+  test("handles binary content and subfolders, skipping hidden ones and node_modules", () => {
+    const dir = h.mod("tree", { "art/a.txt": "a", ".git/config": "x", "node_modules/p/i.js": "x", "art/.hidden": "x" });
+    writeFileSync(join(dir, "art", "b.bin"), Buffer.from([0, 255, 0, 10]));
+    const tree = hashTree(dir);
+    expect(Object.keys(tree).sort()).toEqual(["art/a.txt", "art/b.bin"]);
+    const git = Bun.spawnSync(["git", "hash-object", join(dir, "art", "b.bin")]).stdout.toString().trim();
+    expect(tree["art/b.bin"]).toBe(git);
+  });
+});
+
+test("--version, --help and unknown commands", () => {
+  expect(h.run("--version").stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
+  expect(h.run("--help").stdout).toContain("hmod link");
+  expect(h.run("nonsense").code).toBe(2);
+  expect(h.run("list", "--path", "x").code).toBe(2);
+});

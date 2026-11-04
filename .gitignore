@@ -1,0 +1,6 @@
+node_modules/
+*.tmp-*
+.rehearsal/
+# Written by `herdr-app check` when it runs on the folder here.
+mods/*/*.d.ts
+mods/*/jsconfig.json
