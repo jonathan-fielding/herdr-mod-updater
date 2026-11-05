@@ -185,6 +185,8 @@ That removes the dialog, hmod's records and backups, and the command. Your other
 
 **Link source** shows any possible sources hmod found, each with a **Link** button and how well it matched. You can also type `owner/repo`, `owner/repo/mods/name`, or paste a GitHub URL of either. Linking starts a check.
 
+**Your edits stay safe when you link.** Linking itself is offline and takes nothing from your files. The check that follows compares them with the 30 newest versions of the mod's folder. If they equal one, that's your version. If not, the mod shows **Edited locally**, with an update on offer: **Update all** skips it, and **Update** asks first and keeps a backup. A version older than those 30 looks edited too. If the check fails, the mod shows an error, and an update does the same work first and stops if it can't finish it.
+
 **While an update runs**, its row goes through `Updating: downloading`, `checking`, `backing up`, `installing` and `verifying`. Buttons stay disabled until it ends. Closing the dialog doesn't stop it.
 
 ## Limits
@@ -195,7 +197,6 @@ That removes the dialog, hmod's records and backups, and the command. Your other
   hmod link my-quota owner/herdr-quota --path mods/herdr-quota
   ```
 
-- **Linking makes what's on disk the baseline.** That includes any edits you've made, so hmod stops seeing them as edits. If they differ from the repo, the mod shows **Update available**, and the next update replaces them with no question asked, even from **Update all**. The backup still has them. To keep your edits, don't update that mod, or copy them back from the backup afterwards.
 - **Automatic matching only looks at repos with the `herdr-mod` topic**, up to 20 for each mod, at `mods/<name>/` on the default branch, in the 30 newest commits that touched that folder. For anything else, link by hand: `--path` takes any folder, and `--branch` any branch (the dialog's link box always uses the default branch).
 - **`keys.json` is never merged.** hmod tells you when a repo's `keys.json` changed. Add the keys you want yourself.
 - **`RECIPE.md` and `preview.png` aren't installed.** Only the mod's own folder is.
@@ -241,7 +242,7 @@ hmod reads from `api.github.com`, and for a linked mod downloads its files from 
 Everything lives in `~/.herdr-mod-updater/` (`HMOD_HOME` overrides it):
 
 ```
-sources.json                each linked mod: repo, folder, branch, commit, and the hashes of what was installed
+sources.json                each linked mod: repo, folder, branch, commit, and the hashes of that commit's files
 check.json                  the last answer from GitHub
 github-cache/               GitHub's replies, kept so repeat checks cost less of the rate limit
 backups/<mod>-<time>/       copies made before updates, the last 3 per mod

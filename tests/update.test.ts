@@ -424,10 +424,10 @@ describe("what the result tells the person", () => {
     expect(r.notes).toEqual([]);
   });
 
-  test("no recorded commit to compare with: says it can't tell", async () => {
+  test("no known version to compare with: says it can't tell", async () => {
     installLinked("quota", v1, null);
     const fake = new FakeGitHub({ "o/r": { commits: [{ sha: sha("two"), files: withKeys("{}") }] } });
-    const r = await updateOne("quota", false, { gh: client(fake), check: checker() });
+    const r = await updateOne("quota", true, { gh: client(fake), check: checker() });
     expect(r.keys_changed).toBeNull();
     expect(r.notes.join(" ")).toContain("can't compare");
   });

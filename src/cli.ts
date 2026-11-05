@@ -3,7 +3,6 @@ import { parseArgs } from "node:util";
 import pkg from "../package.json" with { type: "json" };
 import { cachedCheck, checkMods, type CheckEntry, type CheckResult } from "./check.ts";
 import { HmodError, UsageError } from "./errors.ts";
-import { hashTree } from "./fsutil.ts";
 import { linkRefusal, listMods, scanMods } from "./inventory.ts";
 import { installMod } from "./modinstall.ts";
 import { updateAll, updateOne, type UpdateEvent, type UpdateResult } from "./update.ts";
@@ -17,8 +16,8 @@ const HELP = `hmod ${pkg.version}: the mods in your Herdr app, and where they ca
                                                   by their content. --cached shows the last answer,
                                                   with no network call
   hmod link <mod> <owner/repo> [--path mods/x] [--branch b] [--json]
-                                                  record where a mod came from; what's on disk now
-                                                  becomes the baseline for spotting local edits.
+                                                  record where a mod came from. Edits are kept safe:
+                                                  the first check works out the version.
                                                   --path defaults to mods/<mod>, --branch to the
                                                   repo's default
   hmod unlink <mod> [--json]                      forget where a mod came from
@@ -58,18 +57,17 @@ async function link(mod: string, repo: string, opts: { path?: string; branch?: s
   if (!item) throw new HmodError(`no mod called ${mod} in the mods folder`);
   const refusal = linkRefusal(item);
   if (refusal) throw new HmodError(`can't link: ${refusal}`);
-  const files = hashTree(item.dir);
   return updateSources((sources) => {
     const existing = sources[mod];
     if (existing) {
       if (existing.repo === repo && existing.path === path && existing.branch === branch) {
         return { ok: true, mod, source: sourceRef(existing), linked: false };
       }
-      // Relinking would reset the baseline, and hide local edits and the installed commit.
+      // Relinking would forget the baseline, and with it the installed commit.
       throw new HmodError(`${mod} is already linked to ${existing.repo}: run \`hmod unlink ${mod}\` first`);
     }
     const source: SourceRef = { repo, path, branch, commit: null };
-    sources[mod] = { ...source, files };
+    sources[mod] = { ...source, files: {} }; // Nothing from disk: it could be edits. A check fills this in.
     return { ok: true, mod, source, linked: true };
   });
 }
@@ -175,9 +173,10 @@ async function main(args: string[]): Promise<void> {
       if (!mod || !repo || more.length) {
         throw new UsageError("usage: hmod link <mod> <owner/repo> [--path mods/x] [--branch b] [--json]");
       }
-      return print(await link(mod, repo, values), (r) =>
-        `${r.linked ? "linked" : "already linked"}: ${r.mod} -> ${r.source.repo} ${r.source.path}${r.source.branch ? ` (${r.source.branch})` : ""}`,
-      );
+      return print(await link(mod, repo, values), (r) => {
+        const line = `${r.linked ? "linked" : "already linked"}: ${r.mod} -> ${r.source.repo} ${r.source.path}${r.source.branch ? ` (${r.source.branch})` : ""}`;
+        return r.linked ? `${line}\nedits are kept safe, the first check works out the version` : line;
+      });
     }
     case "unlink": {
       noFlags("path", "branch");

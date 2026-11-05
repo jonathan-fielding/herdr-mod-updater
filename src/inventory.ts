@@ -143,6 +143,9 @@ export function localStatus(item: InventoryItem, sources: Sources): ModEntry {
     }
     const record = sources[item.name];
     if (!record) return entry;
+    if (record.commit === null) {
+      return { ...entry, source: sourceRef(record), status: "up_to_date", note: "Linked: the first check works out which version this is" };
+    }
     const changed = diffTrees(hashTree(item.dir), record.files);
     return { ...entry, source: sourceRef(record), status: changed.length ? "modified" : "up_to_date", changed };
   } catch (e: any) {

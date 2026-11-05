@@ -38,17 +38,23 @@ export interface SourceRef {
   path: string;
   /** null: the repo's default branch. */
   branch: string | null;
-  /** The commit the baseline came from. null: not known yet (linked, never installed by hmod). */
+  /** The commit the baseline came from. null: linked by hand, and no check has worked it out yet. */
   commit: string | null;
 }
 
 /**
  * One entry of sources.json, which maps mod name -> SourceRecord.
- * `files` is the baseline, relative path -> git blob SHA-1: what was installed, or what was on
- * disk at `hmod link` when `commit` is null. It's how local edits are told from updates.
+ * `files` is the baseline, relative path -> git blob SHA-1: the files at `commit`. It's how local
+ * edits are told from updates, so it never comes from what's on disk at `hmod link`: until `commit`
+ * is known it means nothing, and what's on disk could be edits.
  */
 export interface SourceRecord extends SourceRef {
   files: Record<string, string>;
+  /**
+   * The local files equalled no version found, so the baseline is the HEAD of that moment, standing
+   * in for a version nobody knows. HEAD can then equal the baseline and still be worth installing.
+   */
+  baseline_assumed?: boolean;
 }
 
 export type Sources = Record<string, SourceRecord>;
