@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { diffTrees, hashTree, atomicWrite } from "./fsutil.ts";
 import { createGitHub, GitHubError, MAX_COMMITS, type CommitRef, type GitHub } from "./github.ts";
 import { localStatus, scanMods, type InventoryItem } from "./inventory.ts";
-import { findSource, type Suggestion } from "./match.ts";
+import { findSource, findVersion, type Suggestion } from "./match.ts";
 import type { ModEntry, SourceRecord, Sources } from "./model.ts";
 import { herdrHome, hmodHome } from "./paths.ts";
 import { loadSources, updateSources } from "./store.ts";
@@ -152,12 +152,37 @@ async function inspectClone(source: string): Promise<CloneState> {
   return { ...state, upstream, ahead };
 }
 
+/**
+ * Works out a hand-linked mod's baseline, which takes GitHub: linking stays offline. Local files
+ * equal to a version make that version the baseline. Anything else counts as edited, against HEAD,
+ * so nothing replaces it unasked. Throws if it can't tell: the baseline stays unknown.
+ */
+export async function resolveBaseline(gh: GitHub, name: string, dir: string, record: SourceRecord): Promise<SourceRecord> {
+  const { repo, path, branch } = record;
+  const gone = () => new GitHubError(`${path} isn't in ${repo}${branch ? ` on ${branch}` : ""} any more`);
+  const commits = await gh.folderCommits(repo, path, branch);
+  const head = commits?.[0]?.sha;
+  if (!commits || !head) throw gone();
+  const headFiles = await gh.treeAt(repo, path, head);
+  if (!headFiles) throw gone();
+  const local = hashTree(dir);
+  const commit = await findVersion(gh, repo, path, commits, local);
+  const resolved: SourceRecord = commit
+    ? { repo, path, branch, commit, files: local }
+    : { repo, path, branch, commit: head, files: headFiles, baseline_assumed: true };
+  return updateSources((sources) => {
+    const latest = sources[name];
+    if (latest?.commit !== null || latest.repo !== repo || latest.path !== path || latest.branch !== branch) return latest ?? resolved;
+    return (sources[name] = resolved);
+  });
+}
+
 /** Which of `commits` the baseline came from, newest first; null if none of them. */
 async function baselineIndex(gh: GitHub, record: SourceRecord, commits: CommitRef[], atHead: boolean): Promise<number | null> {
   const known = commits.findIndex((c) => c.sha === record.commit);
   if (known >= 0) return known;
   if (atHead) return 0;
-  // Linked by hand, or recorded from a commit that didn't touch the folder: go by content.
+  // Recorded from a commit that didn't touch the folder: go by content.
   for (const [i, { sha }] of commits.entries()) {
     const tree = await gh.treeAt(record.repo, record.path, sha);
     if (tree && diffTrees(tree, record.files).length === 0) return i;
@@ -165,7 +190,7 @@ async function baselineIndex(gh: GitHub, record: SourceRecord, commits: CommitRe
   return null;
 }
 
-async function inspectLinked(gh: GitHub, name: string, record: SourceRecord): Promise<Upstream> {
+async function inspectLinked(gh: GitHub, record: SourceRecord): Promise<Upstream> {
   const { repo, path, branch } = record;
   const gone = () => new GitHubError(`${path} isn't in ${repo}${branch ? ` on ${branch}` : ""} any more`);
   const commits = await gh.folderCommits(repo, path, branch);
@@ -175,14 +200,6 @@ async function inspectLinked(gh: GitHub, name: string, record: SourceRecord): Pr
   if (!files) throw gone();
   const atHead = diffTrees(record.files, files).length === 0;
   const index = await baselineIndex(gh, record, commits, atHead);
-  let baseline = record.commit;
-  if (baseline === null && index !== null) {
-    baseline = commits[index]!.sha;
-    await updateSources((sources) => {
-      const latest = sources[name];
-      if (latest?.commit === null && diffTrees(latest.files, record.files).length === 0) latest.commit = baseline;
-    });
-  }
   const capped = index === null && commits.length >= MAX_COMMITS;
   return {
     repo,
@@ -193,7 +210,7 @@ async function inspectLinked(gh: GitHub, name: string, record: SourceRecord): Pr
     version: await gh.versionAt(repo, path, head),
     behind: capped ? commits.length : index,
     capped,
-    baseline,
+    baseline: record.commit,
   };
 }
 
@@ -206,13 +223,16 @@ async function inspect(gh: GitHub, item: InventoryItem, sources: Sources, now: s
     return source ? { ...base, clone: await inspectClone(source) } : null;
   }
   const record = sources[item.name];
-  if (record) return { ...base, upstream: await inspectLinked(gh, item.name, record) };
+  if (record) {
+    const known = record.commit === null ? await resolveBaseline(gh, item.name, item.dir, record) : record;
+    return { ...base, upstream: await inspectLinked(gh, known) };
+  }
   const files = hashTree(item.dir);
   const { match, suggestions } = await findSource(gh, { name: item.name, title: item.title, files });
   if (!match) return { ...base, suggestions };
   const fresh: SourceRecord = { repo: match.repo, path: match.path, branch: null, commit: match.commit, files };
   const linked = await updateSources((latest) => (latest[item.name] ??= fresh));
-  return { ...base, upstream: await inspectLinked(gh, item.name, linked) };
+  return { ...base, upstream: await inspectLinked(gh, linked) };
 }
 
 function localVersion(dir: string): string | null {
@@ -227,8 +247,10 @@ function localVersion(dir: string): string | null {
 function withLinked(entry: CheckEntry, record: SourceRecord, up: Upstream): CheckEntry {
   const same = up.repo === record.repo && up.path === record.path && up.branch === record.branch;
   if (!same) return entry; // Relinked since: this says nothing about the new source.
-  const update = diffTrees(record.files, up.files).length > 0;
-  const measured = record.commit === up.baseline;
+  // An assumed baseline is only a stand-in, so HEAD equalling it doesn't mean the edits hold HEAD.
+  const assumed = record.baseline_assumed === true && entry.status === "modified";
+  const update = assumed || diffTrees(record.files, up.files).length > 0;
+  const measured = record.commit === up.baseline && !record.baseline_assumed;
   const facts = {
     ...entry,
     remote_checked: true,
@@ -239,6 +261,7 @@ function withLinked(entry: CheckEntry, record: SourceRecord, up: Upstream): Chec
     latest_commit: up.head,
   };
   if (entry.status === "modified") {
+    if (assumed) return { ...facts, note: "Matches no version hmod could find, so it counts as edited" };
     return { ...facts, note: update ? "Has local edits, and an update exists" : "Has local edits" };
   }
   return { ...facts, status: update ? "update_available" : "up_to_date" };
@@ -278,14 +301,15 @@ function present(item: InventoryItem, sources: Sources, saved: Saved | undefined
   if (!saved || local.status === "error" || local.status === "herdr" || item.cloned_from) return entry;
 
   const record = sources[item.name];
+  const unknown = record?.commit === null; // What's saved can't be about a baseline nobody's worked out.
   if (saved.clone && item.adapter) entry = withClone(entry, saved.clone, item.adapter.update);
-  else if (saved.upstream && record) entry = withLinked(entry, record, saved.upstream);
+  else if (saved.upstream && record && !unknown) entry = withLinked(entry, record, saved.upstream);
   else if (!record && !item.adapter) {
     entry = { ...entry, remote_checked: !saved.error, suggestions: saved.suggestions };
   }
 
   if (!saved.error) return entry;
-  const answered = saved.upstream || saved.clone;
+  const answered = !unknown && (saved.upstream || saved.clone);
   return answered
     ? { ...entry, note: `Last check failed: ${saved.error}` }
     : { ...entry, status: "error", message: saved.error, remote_checked: false };

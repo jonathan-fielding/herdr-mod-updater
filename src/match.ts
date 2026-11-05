@@ -3,7 +3,7 @@
  * only when its files equal a commit in exactly one repo, and a name alone never links anything.
  */
 import { diffTrees } from "./fsutil.ts";
-import type { GitHub, RepoHit } from "./github.ts";
+import type { CommitRef, GitHub, RepoHit } from "./github.ts";
 
 /** Search can return a lot for a common word; those that fit by name are looked at first. */
 const MAX_CANDIDATES = 20;
@@ -98,6 +98,21 @@ async function scan(gh: GitHub, hit: RepoHit, target: MatchTarget): Promise<Scan
     if (!best || same > best.same) best = { repo, path, commit: sha, exact: false, same };
   }
   return best;
+}
+
+/** The newest commit in the mod folder's history (the same walk as above) with exactly these files. */
+export async function findVersion(
+  gh: GitHub,
+  repo: string,
+  path: string,
+  commits: CommitRef[],
+  files: Record<string, string>,
+): Promise<string | null> {
+  for (const { sha } of commits) {
+    const tree = await gh.treeAt(repo, path, sha);
+    if (tree && diffTrees(tree, files).length === 0) return sha;
+  }
+  return null;
 }
 
 function suggestion(s: Scan, exactCount: number, total: number): Suggestion {

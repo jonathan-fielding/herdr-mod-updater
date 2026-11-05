@@ -13,8 +13,15 @@ afterEach(() => h.cleanup());
 
 const sources = (): Sources => JSON.parse(readFileSync(join(h.hmod, "sources.json"), "utf8"));
 
+/** Linked, with the baseline a check would have worked out. */
+function resolved(mod: string, dir: string): void {
+  mkdirSync(h.hmod, { recursive: true });
+  const record = { repo: "someone/herdr-quota", path: `mods/${mod}`, branch: null, commit: "abc", files: hashTree(dir) };
+  writeFileSync(join(h.hmod, "sources.json"), JSON.stringify({ [mod]: record }));
+}
+
 describe("hmod link", () => {
-  test("records the source and hashes what's on disk, skipping injected files", () => {
+  test("records the source and nothing from disk", () => {
     const r = h.json<LinkResult>("link", "quota", "someone/herdr-quota");
     expect(r).toEqual({
       ok: true,
@@ -24,8 +31,7 @@ describe("hmod link", () => {
     });
     const record = sources().quota!;
     expect(record.repo).toBe("someone/herdr-quota");
-    expect(Object.keys(record.files).sort()).toEqual(["main.js", "mod.json"]);
-    expect(record.files["main.js"]).toBe(gitBlobSha(Buffer.from("third party")));
+    expect(record.files).toEqual({});
   });
 
   test("takes --path and --branch, and the local name may differ from the repo's", () => {
@@ -44,8 +50,8 @@ describe("hmod link", () => {
   });
 
   test("a local edit, addition or removal lists as modified", () => {
-    h.json("link", "quota", "someone/herdr-quota");
     const dir = join(h.herdr, "mods", "quota");
+    resolved("quota", dir);
     writeFileSync(join(dir, "main.js"), "edited");
     writeFileSync(join(dir, "extra.js"), "new");
     rmSync(join(dir, "mod.json"));
@@ -53,8 +59,8 @@ describe("hmod link", () => {
   });
 
   test("files Herdr injects later don't count as edits", () => {
-    h.json("link", "no-mod-json", "someone/thing");
     const dir = join(h.herdr, "mods", "no-mod-json");
+    resolved("no-mod-json", dir);
     writeFileSync(join(dir, "gpui-kit.d.ts"), "// injected");
     writeFileSync(join(dir, "jsconfig.json"), "{}");
     writeFileSync(join(dir, ".DS_Store"), "x");
@@ -62,8 +68,9 @@ describe("hmod link", () => {
   });
 
   test("linking the same thing again changes nothing", () => {
-    h.json("link", "quota", "someone/herdr-quota");
-    writeFileSync(join(h.herdr, "mods", "quota", "main.js"), "edited");
+    const dir = join(h.herdr, "mods", "quota");
+    resolved("quota", dir);
+    writeFileSync(join(dir, "main.js"), "edited");
     expect(h.json<LinkResult>("link", "quota", "someone/herdr-quota").linked).toBe(false);
     expect(h.entry("quota").status).toBe("modified");
   });

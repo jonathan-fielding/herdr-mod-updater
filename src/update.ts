@@ -19,7 +19,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { run, updateClone, UpdateRefused } from "./adapters.ts";
-import { checkMods } from "./check.ts";
+import { checkMods, resolveBaseline } from "./check.ts";
 import { HmodError } from "./errors.ts";
 import { diffTrees, hashTree, isIgnored, withLock } from "./fsutil.ts";
 import { createGitHub, GitHubError, type GitHub, type TreeEntry } from "./github.ts";
@@ -314,10 +314,11 @@ async function keysChange(gh: GitHub, record: SourceRecord, target: string): Pro
   const manual = `hmod never merges it: add any keys you want to your own keys.json.`;
   try {
     const now = await gh.rootFile(record.repo, "keys.json", target);
-    if (record.commit === null) {
+    const { commit } = record;
+    if (record.baseline_assumed || commit === null) {
       return now ? { changed: null, notes: [`${record.repo} has a keys.json that hmod can't compare with what you installed. ${manual}`] } : { changed: false, notes: [] };
     }
-    const changed = now !== (await gh.rootFile(record.repo, "keys.json", record.commit));
+    const changed = now !== (await gh.rootFile(record.repo, "keys.json", commit));
     return { changed, notes: changed ? [`${record.repo}'s keys.json changed. ${manual}`] : [] };
   } catch (e: any) {
     return { changed: null, notes: [`Couldn't tell whether ${record.repo}'s keys.json changed: ${e?.message ?? e}`] };
@@ -371,7 +372,8 @@ async function updateLinked(
 ): Promise<UpdateResult> {
   const { name, dir } = item;
   const { repo, path, branch } = record;
-  const result = { ...blank(name), from_commit: record.commit, from_version: version(dir) };
+  const assumed = record.baseline_assumed === true;
+  const result = { ...blank(name), from_commit: assumed ? null : record.commit, from_version: version(dir) };
 
   step("downloading");
   const gone = () => new GitHubError(`${path} isn't in ${repo}${branch ? ` on ${branch}` : ""} any more`);
@@ -383,7 +385,8 @@ async function updateLinked(
   const files: Record<string, string> = Object.create(null);
   for (const [rel, file] of incoming) files[rel] = file.sha;
   result.to_commit = head;
-  if (diffTrees(record.files, files).length === 0) return { ...result, to_version: result.from_version };
+  const replacingEdits = assumed && entry.status === "modified"; // HEAD equals the stand-in, not what's installed.
+  if (!replacingEdits && diffTrees(record.files, files).length === 0) return { ...result, to_version: result.from_version };
 
   const removed = Object.keys(record.files).filter((rel) => !Object.hasOwn(files, rel));
   const unsafe = removed.find((rel) => !safePath(rel));
@@ -426,6 +429,7 @@ async function updateLinked(
       if (!latest) return; // Unlinked meanwhile: that stands.
       latest.commit = head;
       latest.files = files;
+      delete latest.baseline_assumed;
     });
   } catch (e: any) {
     const why = e?.message ?? String(e);
@@ -480,7 +484,15 @@ async function updateItem(item: InventoryItem, force: boolean, gh: GitHub, check
   const staging = home.staging();
   const failure = (outcome: UpdateOutcome, error: string): UpdateResult => ({ ...blank(item.name), ok: false, outcome, error });
   try {
-    const sources = loadSources();
+    let sources = loadSources();
+    if (sources[item.name]?.commit === null && !linkRefusal(item) && !item.problem) {
+      try {
+        await resolveBaseline(gh, item.name, item.dir, sources[item.name]!);
+      } catch (e: any) {
+        throw new UpdateRefused(`can't tell which version of ${item.name} is installed, so nothing changed: ${e?.message ?? e}`);
+      }
+      sources = loadSources();
+    }
     const entry = localStatus(item, sources);
     const refused = refusal(item, entry, force);
     if (refused) return failure("refused", refused);

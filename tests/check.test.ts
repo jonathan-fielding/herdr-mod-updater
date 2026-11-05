@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cachedCheck, checkMods, type CheckEntry, type CheckResult } from "../src/check.ts";
 import { hashTree } from "../src/fsutil.ts";
@@ -207,6 +207,13 @@ describe("mods that are never searched for", () => {
 describe("linked mods", () => {
   const link = (name: string, ...more: string[]) => h.json<LinkResult>("link", name, "a/herdr-quota", ...more);
   const fake = () => new FakeGitHub({ "a/herdr-quota": { commits: history } });
+  /** Installed at a commit GitHub's history no longer shows, as an install by hmod could be. */
+  const recorded = (files: Record<string, string>) => {
+    const dir = h.mod("quota", files);
+    const record = { repo: "a/herdr-quota", path: "mods/quota", branch: null, commit: sha("lost"), files: hashTree(dir) };
+    mkdirSync(h.hmod, { recursive: true });
+    writeFileSync(join(h.hmod, "sources.json"), JSON.stringify({ quota: record }));
+  };
 
   test("baseline and local equal HEAD: up to date, and the unknown commit gets filled in", async () => {
     h.mod("quota", v3);
@@ -229,6 +236,7 @@ describe("linked mods", () => {
   test("local edits: modified, saying no update exists", async () => {
     h.mod("quota", v3);
     link("quota");
+    await check(fake());
     writeFileSync(join(h.herdr, "mods", "quota", "main.js"), "edited");
     expect(entry(await check(fake()), "quota")).toMatchObject({
       status: "modified",
@@ -241,6 +249,7 @@ describe("linked mods", () => {
   test("local edits on an old version: modified, saying an update exists", async () => {
     h.mod("quota", v1);
     link("quota");
+    await check(fake());
     writeFileSync(join(h.herdr, "mods", "quota", "main.js"), "edited");
     expect(entry(await check(fake()), "quota")).toMatchObject({
       status: "modified",
@@ -251,8 +260,7 @@ describe("linked mods", () => {
   });
 
   test("a baseline older than the walk: behind is a floor", async () => {
-    h.mod("quota", { "main.js": "ancient" });
-    link("quota");
+    recorded({ "main.js": "ancient" });
     const commits = Array.from({ length: MAX_COMMITS + 5 }, (_, i) => ({
       sha: sha(`c${i}`),
       files: inRepo("quota", { "main.js": `v${i}` }),
@@ -265,8 +273,7 @@ describe("linked mods", () => {
   });
 
   test("a baseline not in history at all, on a short one: update, but behind is unknown", async () => {
-    h.mod("quota", { "main.js": "not from here" });
-    link("quota");
+    recorded({ "main.js": "not from here" });
     expect(entry(await check(fake()), "quota")).toMatchObject({
       status: "update_available",
       commits_behind: null,

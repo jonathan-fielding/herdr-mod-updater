@@ -178,8 +178,12 @@ that isn't set up is `unlinked` and is never shown.
   the real one. `.hmod-installed` makes it clone-installed, so linking it is refused and an update pulls
   the clone and runs `hmod mod install`. That install ignores a shell's `HMOD_HOME`, so only the
   generated argv decides the data folder.
-- **A link's baseline is what's on disk**, edits included. Those edits aren't `modified`, and an update
-  replaces them without asking, keeping a backup. A fresh build could fetch the commit's files instead.
+- **Never take a link's baseline from disk**: it could be edits, and an update would then replace them
+  unasked. `hmod link` stays offline and records no baseline. The first check compares the local files
+  with the folder's last 30 commits. A match is the baseline. Otherwise the mod is `modified` against
+  HEAD with `update_available` true, marked `baseline_assumed` so a forced update still installs when
+  HEAD equals that baseline. An update does this first if no check has, and refuses if it can't.
+  A failed check is `error`, never clean.
 - **`--json` shapes are a contract** between the CLI and the mod: add fields, don't rename them.
 - **Empty the log before starting a job**, in the shell that returns first. Otherwise a poll can read
   the last job's lines as this job's. The id in the header is what tells them apart.
