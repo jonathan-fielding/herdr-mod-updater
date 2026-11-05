@@ -7,6 +7,8 @@ update, one at a time, and each row shows how far it has got. A mod with local e
 they're replaced. The dialog is the front end of the `hmod` command-line tool, and it says how to get
 that tool until it's installed.
 
+![Mod updates](preview.png)
+
 ## What you see
 
 A dialog overlay 620px wide and 80% of the window tall, on the `popover` background, base type 13px.

@@ -34,7 +34,9 @@ Your mods folder                     hmod                             GitHub
 
 ## What it looks like in Herdr
 
-There's no screenshot yet. With two mods waiting and three settled, the dialog reads:
+![Mod updates, with nothing waiting](preview.png)
+
+With two mods waiting and three settled, the dialog reads:
 
 ```
 Mod updates   Checked 5m ago             [ Check for updates ]
