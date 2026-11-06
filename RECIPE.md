@@ -52,6 +52,7 @@ In the list, top to bottom:
   |---|---|---|---|
   | `Update available` | `accent` | `1.2.0 → 1.3.0 · 2 commits behind` | primary `Update` |
   | `Edited locally` | `blocked` | up to 3 changed files, then the versions, `An update exists` or `No update to install` | `Update`; none if nothing newer is known |
+  | `Source found` | `muted` | `owner/repo: confirm it before updating`, when exactly one offer is exact | `Confirm source` |
   | `No source known` | `muted` | `N possible sources found`, or `Where this mod came from isn't known` | `Link source` |
   | `Error` | `blocked` | the message | `Retry`, which runs a check |
   | `Waiting` | `dim` | the versions | none |
@@ -63,7 +64,9 @@ In the list, top to bottom:
 
   `Version 1.2.0` replaces the arrow when no newer version is named, and `+` follows a commit count
   that's only a floor.
-- **Link panel**, inside a row whose Link source is open. 8px above, 8px gap, 12px type. One line for
+- **Link panel**, inside a row whose Link source is open. 8px above, 8px gap, 12px type. When there are
+  offers it starts, in `muted`: `Matching files don't prove who made a mod: anyone can publish a copy.
+  Link only a repo you recognise.` One line for
   each possible source: `owner/repo · path` in `foreground`, truncated, the reason why under it at
   11px `dim`, and a `Link` button. Then an input 28px tall, radius 6, `background` fill, `input`
   border, placeholder `owner/repo`, with a `Link` button. A link error under it in `blocked`.
@@ -213,8 +216,10 @@ that isn't set up is `unlinked` and is never shown.
   plain copy.
 - `hmod list --json` gives `herdr` for a mod in `installed.json`, whose row is under Updated with Herdr
   and has no button.
-- With a mod whose files equal an old commit in exactly one `herdr-mod` repo, `hmod check` links it and
-  it shows `Update available` with versions and commits behind.
+- With a mod whose files equal an old commit in exactly one `herdr-mod` repo, `hmod check` links nothing:
+  the row says `Source found` with the repo, its button is `Confirm source`, and Update all skips it. `Link`
+  in that panel links it, and it then shows `Update available` with versions and commits behind.
+- `links.jsonl` has a line for that link, saying it came from the dialog and why it was offered.
 - With the same files in two repos, it stays `No source known` with two offers. `Link` on one links it.
 - A mod with an edit shows `Edited locally`, the changed file, and is skipped by Update all.
 - Update on a mod replaces its files, leaves `gpui-kit.d.ts`, `jsconfig.json` and dotfiles alone, leaves a

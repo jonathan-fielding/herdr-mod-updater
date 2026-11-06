@@ -13,6 +13,8 @@ export function herdrHome(): string {
 
 export const paths = {
   sources: () => join(hmodHome(), "sources.json"),
+  /** One JSON line per link and unlink, so it's clear later why a mod trusts a repo. */
+  linkLog: () => join(hmodHome(), "links.jsonl"),
   /** Serialises every write to sources.json. */
   sourcesLock: () => join(hmodHome(), ".lock"),
   mods: () => join(herdrHome(), "mods"),

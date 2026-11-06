@@ -7,6 +7,7 @@ import { GitHub, GitHubError, MAX_COMMITS, RateLimitError } from "../src/github.
 import type { LinkResult, Sources } from "../src/model.ts";
 import { FakeGitHub, inRepo, runCli, sha } from "./fake-github.ts";
 import { makeHomes, writeTree, type Homes } from "./helpers.ts";
+import { updateAll, type UpdateEvent } from "../src/update.ts";
 
 const injected = { "gpui-kit.d.ts": "// injected", "jsconfig.json": "{}", ".DS_Store": "x" };
 const v1 = { "main.js": "version one", "mod.json": `{ "title": "Quota", "version": "1.0.0" }`, "lib/util.js": "util one" };
@@ -38,11 +39,25 @@ const check = async (fake: FakeGitHub) => checkMods(client(fake));
 const entry = (r: CheckResult, name: string): CheckEntry => r.mods.find((m) => m.name === name)!;
 const sources = (): Sources => JSON.parse(readFileSync(join(h.hmod, "sources.json"), "utf8"));
 const hasSources = () => readdirSync(h.hmod).includes("sources.json");
+/** What the person does with an offer. */
+const confirm = (mod = "quota", repo = "a/herdr-quota", ...more: string[]) => h.json<LinkResult>("link", mod, repo, ...more);
 
 describe("finding a source by content", () => {
-  test("exact at HEAD: links it, saves the baseline, and it's up to date", async () => {
+  test("one exact match is offered, and nothing is linked until the person says so", async () => {
     h.mod("quota", { ...v3, ...injected });
     const fake = new FakeGitHub({ "a/herdr-quota": { commits: history } });
+    const m = entry(await check(fake), "quota");
+    expect(m).toMatchObject({ status: "unlinked", source: null, update_available: false });
+    expect(m.suggestions).toHaveLength(1);
+    expect(m.suggestions[0]).toMatchObject({ repo: "a/herdr-quota", path: "mods/quota", exact: true, commit: sha("three") });
+    expect(m.suggestions[0]!.why).toBe(`Every file matches commit ${sha("three").slice(0, 7)}`);
+    expect(hasSources()).toBe(false);
+  });
+
+  test("confirmed at HEAD: the baseline is saved and it's up to date", async () => {
+    h.mod("quota", { ...v3, ...injected });
+    const fake = new FakeGitHub({ "a/herdr-quota": { commits: history } });
+    confirm();
     const m = entry(await check(fake), "quota");
     expect(m).toMatchObject({
       status: "up_to_date",
@@ -56,9 +71,10 @@ describe("finding a source by content", () => {
     expect(Object.keys(sources().quota!.files).sort()).toEqual(["lib/util.js", "main.js", "mod.json"]);
   });
 
-  test("an old version equals no HEAD, but history finds it: update available", async () => {
+  test("an old version equals no HEAD, but history finds it once confirmed: update available", async () => {
     h.mod("quota", { ...v1, ...injected });
     const fake = new FakeGitHub({ "a/herdr-quota": { commits: history } });
+    confirm();
     const m = entry(await check(fake), "quota");
     expect(m).toMatchObject({
       status: "update_available",
@@ -77,6 +93,7 @@ describe("finding a source by content", () => {
     const fake = new FakeGitHub({
       "a/herdr-quota": { commits: [{ sha: sha("bump"), files: inRepo("quota", bumped) }, ...history] },
     });
+    confirm();
     expect(entry(await check(fake), "quota")).toMatchObject({
       status: "update_available",
       commits_behind: 1,
@@ -84,7 +101,7 @@ describe("finding a source by content", () => {
     });
   });
 
-  test("only the repo with the right content links, among repos sharing the name", async () => {
+  test("only the repo with the right content is offered, among repos sharing the name", async () => {
     h.mod("quota", v1);
     const other = { "main.js": "someone else's", "mod.json": v1["mod.json"] };
     const fake = new FakeGitHub({
@@ -92,17 +109,14 @@ describe("finding a source by content", () => {
       "a/herdr-quota": { commits: history },
       "c/herdr-quota": { commits: [{ sha: sha("c"), files: inRepo("quota", { "main.js": "third" }) }] },
     });
-    expect(entry(await check(fake), "quota").source?.repo).toBe("a/herdr-quota");
+    expect(entry(await check(fake), "quota").suggestions.map((s) => s.repo)).toEqual(["a/herdr-quota"]);
   });
 
-  test("an install renamed locally still links, keeping the repo's path", async () => {
+  test("an install renamed locally is still offered, keeping the repo's path", async () => {
     h.mod("my-quota", { ...v3, "mod.json": `{ "title": "Quota" }` });
     const files = { ...v3, "mod.json": `{ "title": "Quota" }` };
     const fake = new FakeGitHub({ "a/herdr-quota": { commits: [{ sha: sha("x"), files: inRepo("quota", files) }] } });
-    expect(entry(await check(fake), "my-quota")).toMatchObject({
-      status: "up_to_date",
-      source: { repo: "a/herdr-quota", path: "mods/quota" },
-    });
+    expect(entry(await check(fake), "my-quota").suggestions[0]).toMatchObject({ repo: "a/herdr-quota", path: "mods/quota", exact: true });
   });
 
   test("forks with the same commit: left unlinked, with both offered", async () => {
@@ -173,7 +187,7 @@ describe("finding a source by content", () => {
     const fake = new FakeGitHub({
       "a/herdr-quota": { commits: [{ sha: sha("x"), files: inRepo("quota", { ...v3, "mod.json": `{ "title": "Quota" }` }) }] },
     });
-    expect(entry(await check(fake), "renamed").source?.repo).toBe("a/herdr-quota");
+    expect(entry(await check(fake), "renamed").suggestions[0]?.repo).toBe("a/herdr-quota");
   });
 
   test("a failing candidate fails the mod rather than linking without seeing every repo", async () => {
@@ -365,6 +379,7 @@ describe("rate limits", () => {
   test("a limit doesn't wipe the last good answer from --cached", async () => {
     h.mod("quota", v1);
     const fake = new FakeGitHub({ "a/herdr-quota": { commits: history } });
+    confirm();
     await check(fake);
     fake.limited = limited;
     expect(entry(await checkMods(client(fake)), "quota").status).toBe("error");
@@ -398,6 +413,7 @@ describe("requests", () => {
   test("a second check is conditional, and pinned URLs aren't asked again", async () => {
     h.mod("quota", v3);
     const fake = new FakeGitHub({ "a/herdr-quota": { commits: history } });
+    confirm();
     await check(fake);
     fake.requests.length = 0;
     await check(fake);
@@ -432,6 +448,7 @@ describe("requests", () => {
   test("a damaged cache file is just a miss", async () => {
     h.mod("quota", v3);
     const fake = new FakeGitHub({ "a/herdr-quota": { commits: history } });
+    confirm();
     await check(fake);
     const dir = join(h.hmod, "github-cache");
     for (const f of readdirSync(dir)) writeFileSync(join(dir, f), "{ nope");
@@ -468,6 +485,7 @@ describe("hmod check --cached", () => {
 
   test("sees edits made since", async () => {
     h.mod("quota", v1);
+    confirm();
     await check(new FakeGitHub({ "a/herdr-quota": { commits: history } }));
     writeFileSync(join(h.herdr, "mods", "quota", "main.js"), "edited");
     expect(entry(await cachedCheck(), "quota")).toMatchObject({ status: "modified", update_available: true });
@@ -475,6 +493,7 @@ describe("hmod check --cached", () => {
 
   test("an update installed since clears update_available without asking GitHub", async () => {
     h.mod("quota", v1);
+    confirm();
     await check(new FakeGitHub({ "a/herdr-quota": { commits: history } }));
     // What an update does: new files on disk, and a baseline to match.
     writeTree(join(h.herdr, "mods", "quota"), v3);
@@ -486,6 +505,7 @@ describe("hmod check --cached", () => {
 
   test("drops what was learned about a source that's been unlinked", async () => {
     h.mod("quota", v1);
+    confirm();
     await check(new FakeGitHub({ "a/herdr-quota": { commits: history } }));
     h.json("unlink", "quota");
     expect(entry(await cachedCheck(), "quota")).toMatchObject({ status: "unlinked", source: null, update_available: false });
@@ -616,6 +636,7 @@ describe("the CLI", () => {
   test("check --json goes end to end, and --cached then needs no server", async () => {
     h.mod("quota", { ...v1, ...injected });
     const fake = new FakeGitHub({ "a/herdr-quota": { commits: history } });
+    confirm();
     const live = JSON.parse((await runCli(h, fake, "check", "--json")).stdout) as CheckResult;
     expect(live.authenticated).toBe(false);
     expect(entry(live, "quota")).toMatchObject({ status: "update_available", commits_behind: 2 });
@@ -635,6 +656,7 @@ describe("the CLI", () => {
       "a/forked": { commits: shared },
       "b/forked": { commits: shared },
     });
+    confirm();
     const { stdout, code } = await runCli(h, fake, "check");
     expect(code).toBe(0);
     expect(stdout).toContain("2 behind -> 3.0.0");
@@ -645,5 +667,91 @@ describe("the CLI", () => {
     expect(h.run("list", "--cached").code).toBe(2);
     expect(h.run("check", "quota").code).toBe(2);
     expect(h.run("check", "--path", "x").code).toBe(2);
+  });
+});
+
+describe("nobody can win a link by copying a mod", () => {
+  const signedIn = (fake: FakeGitHub) => checkMods(client(fake, "t0ken"));
+  const decoys = (n: number) =>
+    Object.fromEntries(Array.from({ length: n }, (_, i) => [`spam/quota-${i}`, { commits: [{ sha: sha(`d${i}`), files: inRepo("other", { "main.js": `d${i}` }) }] }]));
+
+  test("a lone copy is only ever an offer, and Update all leaves it alone", async () => {
+    h.mod("quota", v1);
+    const fake = new FakeGitHub({ "attacker/quota": { commits: [{ sha: sha("evil"), files: inRepo("quota", { "main.js": "stolen" }) }, ...history] } });
+    const events: UpdateEvent[] = [];
+    await updateAll((e) => events.push(e), { gh: client(fake), check: async () => ({ ok: true, output: "" }) });
+    expect(events[0]).toMatchObject({ event: "plan", mods: [], skipped: [{ mod: "quota", status: "unlinked" }] });
+    expect(readFileSync(join(h.herdr, "mods", "quota", "main.js"), "utf8")).toBe("version one");
+    expect(hasSources()).toBe(false);
+  });
+
+  test("with a token every topic repo counts, so spam can't push the real one out", async () => {
+    h.mod("quota", v3);
+    const fake = new FakeGitHub({
+      ...decoys(25),
+      "attacker/quota-mod": { commits: history },
+      "real/quota": { commits: history },
+    });
+    const m = entry(await signedIn(fake), "quota");
+    expect(m.suggestions.map((s) => s.repo).sort()).toEqual(["attacker/quota-mod", "real/quota"]);
+    expect(m.suggestions[0]!.why).toContain("1 other repo");
+    expect(hasSources()).toBe(false);
+  });
+
+  test("the list is read to its last page", async () => {
+    h.mod("quota", v3);
+    const fake = new FakeGitHub({ ...decoys(150), "real/herdr-quota": { commits: history } });
+    expect(entry(await signedIn(fake), "quota").suggestions.map((s) => s.repo)).toEqual(["real/herdr-quota"]);
+    const pages = fake.requests.filter((r) => r.url.pathname.startsWith("/search")).map((r) => r.url.searchParams.get("page"));
+    expect(pages).toEqual(["1", "2"]);
+  });
+
+  test("a repo that doesn't fit by name is found by a file it holds", async () => {
+    const files = { "main.js": "version three", "mod.json": `{ "title": "Nothing alike" }` };
+    h.mod("my-thing", files);
+    const fake = new FakeGitHub({ "a/zzz": { commits: [{ sha: sha("z"), files: inRepo("other", files) }] } });
+    expect(entry(await signedIn(fake), "my-thing").suggestions[0]).toMatchObject({ repo: "a/zzz", path: "mods/other", exact: true });
+  });
+
+  test("repos with nothing to do with the mod cost one request each", async () => {
+    h.mod("quota", v3);
+    const fake = new FakeGitHub({ ...decoys(5), "real/herdr-quota": { commits: history } });
+    await signedIn(fake);
+    const spam = fake.requests.filter((r) => r.url.pathname.startsWith("/repos/spam/"));
+    expect(spam).toHaveLength(5);
+    expect(spam.every((r) => r.url.pathname.endsWith("/git/trees/HEAD"))).toBe(true);
+  });
+
+  test("the shortlist lasts a day, but what's offered is always compared afresh", async () => {
+    h.mod("quota", v1);
+    const fake = new FakeGitHub({ ...decoys(5), "real/herdr-quota": { commits: history } });
+    await signedIn(fake);
+    fake.requests.length = 0;
+    await signedIn(fake);
+    const asked = fake.requests.map((r) => r.url.pathname);
+    expect(asked.some((p) => p.startsWith("/search") || p.endsWith("/git/trees/HEAD"))).toBe(false);
+    expect(asked).toContain("/repos/real/herdr-quota/commits");
+  });
+
+  test("a tree cut short can't rule a repo out", async () => {
+    h.mod("quota", v3);
+    const fake = new FakeGitHub({ "big/mono": { truncated: true, commits: [{ sha: sha("m"), files: inRepo("other-name", { "main.js": "nothing alike" }) }] } });
+    await signedIn(fake);
+    expect(fake.requests.some((r) => r.url.pathname === "/repos/big/mono/contents/mods")).toBe(true);
+  });
+
+  test("without a token it searches by name, and reads no trees", async () => {
+    h.mod("quota", v3);
+    const fake = new FakeGitHub({ ...decoys(5), "real/herdr-quota": { commits: history } });
+    expect(entry(await check(fake), "quota").suggestions.map((s) => s.repo)).toEqual(["real/herdr-quota"]);
+    expect(fake.requests.some((r) => r.url.pathname.endsWith("/git/trees/HEAD"))).toBe(false);
+  });
+
+  test("a mod already linked never goes through any of this", async () => {
+    h.mod("quota", v3);
+    const fake = new FakeGitHub({ "a/herdr-quota": { commits: history } });
+    confirm();
+    await signedIn(fake);
+    expect(fake.requests.some((r) => r.url.pathname.startsWith("/search"))).toBe(false);
   });
 });

@@ -1,8 +1,8 @@
 /** sources.json: what each linked mod came from, and the baseline of what was installed. */
-import { mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { HmodError } from "./errors.ts";
 import { atomicWrite, readJson, withLock } from "./fsutil.ts";
-import type { SourceRecord, SourceRef, Sources } from "./model.ts";
+import type { LinkLogEntry, SourceRecord, SourceRef, Sources } from "./model.ts";
 import { hmodHome, paths } from "./paths.ts";
 
 function isRecord(v: unknown): v is SourceRecord {
@@ -45,6 +45,11 @@ export async function updateSources<T>(change: (sources: Sources) => T): Promise
     atomicWrite(paths.sources(), `${JSON.stringify(sources, null, 2)}\n`);
     return result;
   });
+}
+
+/** Call within updateSources: if this can't be written, the link doesn't happen either. */
+export function logLink(entry: Omit<LinkLogEntry, "at">): void {
+  appendFileSync(paths.linkLog(), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
 }
 
 /** The record without its baseline: what the JSON output shows. */

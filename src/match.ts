@@ -1,12 +1,13 @@
 /**
- * Finds where an unlinked mod came from by its content: names are unreliable, so a mod is linked
- * only when its files equal a commit in exactly one repo, and a name alone never links anything.
+ * Finds where an unlinked mod might have come from by its content, and offers what it finds. It
+ * never links: matching files prove someone holds a copy, not who wrote it, and anyone can publish
+ * a copy with the herdr-mod topic. So the person always chooses, even with one exact match.
  */
 import { diffTrees } from "./fsutil.ts";
-import type { CommitRef, GitHub, RepoHit } from "./github.ts";
+import type { CommitRef, GitHub, RepoHit, RepoTree } from "./github.ts";
 
-/** Search can return a lot for a common word; those that fit by name are looked at first. */
-const MAX_CANDIDATES = 20;
+/** Without a token GitHub's limit rules out reading every repo, so search by name picks these. */
+const MAX_SEARCHED = 20;
 const MAX_SUGGESTIONS = 5;
 /** Files tried when asking whether a repo holds any of the mod. Local order: main.js first. */
 const MAX_PROBES = 10;
@@ -16,7 +17,7 @@ export interface Suggestion {
   path: string;
   /** Why it's offered, for showing to the person. */
   why: string;
-  /** Every file equals `commit`: the mod is here, and in at least one other repo too. */
+  /** Every file equals `commit`. That's a copy of the mod, which isn't proof of where it came from. */
   exact: boolean;
   /** The closest commit. */
   commit: string;
@@ -29,19 +30,10 @@ export interface MatchTarget {
   files: Record<string, string>;
 }
 
-export interface Match {
+interface Scan {
   repo: string;
   path: string;
   commit: string;
-}
-
-export interface MatchResult {
-  /** Set only when every file equals one commit in exactly one repo. */
-  match: Match | null;
-  suggestions: Suggestion[];
-}
-
-interface Scan extends Match {
   exact: boolean;
   /** How many local files equal that commit. */
   same: number;
@@ -50,7 +42,7 @@ interface Scan extends Match {
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const searchTerm = (s: string) => s.replace(/[^\p{L}\p{N} _-]+/gu, " ").trim();
 
-async function candidates(gh: GitHub, { name, title }: MatchTarget): Promise<RepoHit[]> {
+async function searched(gh: GitHub, { name, title }: MatchTarget): Promise<RepoHit[]> {
   const terms = [...new Set([name, title].map(searchTerm).filter(Boolean))];
   const found = new Map<string, RepoHit>();
   for (const hits of await Promise.all(terms.map((t) => gh.searchMods(t)))) {
@@ -58,7 +50,27 @@ async function candidates(gh: GitHub, { name, title }: MatchTarget): Promise<Rep
   }
   const wanted = slug(name);
   const fits = (hit: RepoHit) => (hit.name.toLowerCase().includes(wanted) ? 0 : 1);
-  return [...found.values()].sort((a, b) => fits(a) - fits(b)).slice(0, MAX_CANDIDATES);
+  return [...found.values()].sort((a, b) => fits(a) - fits(b)).slice(0, MAX_SEARCHED);
+}
+
+/** Whether a repo is worth a closer look: it has a folder named for the mod, or any of its files. */
+function mayHold(repo: RepoTree | null, target: MatchTarget): boolean {
+  if (!repo) return false;
+  if (repo.truncated) return true; // Part of a tree can't rule anything out.
+  const blobs = new Set(telling(target.files).map((rel) => target.files[rel]));
+  const names = new Set([slug(target.name), slug(target.title)]);
+  return repo.tree.some((e) => {
+    const folder = e.path.match(/^mods\/([^/]+)\//)?.[1];
+    return (folder !== undefined && names.has(slug(folder))) || (e.type === "blob" && blobs.has(e.sha));
+  });
+}
+
+/** Every repo with the topic, so nobody's real source can be pushed out of a short list. */
+async function candidates(gh: GitHub, target: MatchTarget): Promise<RepoHit[]> {
+  if (!gh.authenticated) return searched(gh, target);
+  const repos = await gh.topicRepos();
+  const trees = await Promise.all(repos.map((r) => gh.repoTree(r.full_name)));
+  return repos.filter((_, i) => mayHold(trees[i] ?? null, target));
 }
 
 /** The repo's folder for this mod. Installs get renamed, so a differing name still gets a look. */
@@ -118,25 +130,17 @@ export async function findVersion(
 function suggestion(s: Scan, exactCount: number, total: number): Suggestion {
   const commit = s.commit.slice(0, 7);
   const others = exactCount - 1;
-  const why = s.exact
-    ? `Every file matches commit ${commit}, but so ${others === 1 ? "does 1 other repo" : `do ${others} other repos`}`
-    : `${s.same} of ${total} files match commit ${commit}`;
+  const also = others === 0 ? "" : `, but so ${others === 1 ? "does 1 other repo" : `do ${others} other repos`}`;
+  const why = s.exact ? `Every file matches commit ${commit}${also}` : `${s.same} of ${total} files match commit ${commit}`;
   return { repo: s.repo, path: s.path, why, exact: s.exact, commit: s.commit };
 }
 
-export async function findSource(gh: GitHub, target: MatchTarget): Promise<MatchResult> {
+export async function findSource(gh: GitHub, target: MatchTarget): Promise<Suggestion[]> {
   const hits = await candidates(gh, target);
   // One repo failing fails the lot: "exactly one repo" can't be claimed without having seen them all.
   const scans = (await Promise.all(hits.map((hit) => scan(gh, hit, target)))).filter((s) => s !== null);
-  const exact = scans.filter((s) => s.exact);
-  if (exact.length === 1) {
-    const { repo, path, commit } = exact[0]!;
-    return { match: { repo, path, commit }, suggestions: [] };
-  }
+  const exact = scans.filter((s) => s.exact).length;
   const total = Object.keys(target.files).length;
   const ranked = scans.sort((a, b) => Number(b.exact) - Number(a.exact) || b.same - a.same);
-  return {
-    match: null,
-    suggestions: ranked.slice(0, MAX_SUGGESTIONS).map((s) => suggestion(s, exact.length, total)),
-  };
+  return ranked.slice(0, MAX_SUGGESTIONS).map((s) => suggestion(s, exact, total));
 }

@@ -49,9 +49,17 @@ export interface CommitRef {
   sha: string;
 }
 
+/** A whole repo's tree at its default branch. */
+export interface RepoTree {
+  truncated: boolean;
+  tree: { path: string; type: string; sha: string }[];
+}
+
 interface CachedResponse {
   etag: string | null;
   body: unknown;
+  /** When GitHub last confirmed this. */
+  saved?: number;
 }
 
 interface ContentEntry {
@@ -74,6 +82,11 @@ interface TreeResponse {
 }
 
 const REQUEST_TIMEOUT_MS = 30_000;
+/** GitHub's search stops at 1,000 results, which is this many pages. */
+const SEARCH_PAGES = 10;
+const SEARCH_PAGE_SIZE = 100;
+/** The topic's repos are only a shortlist, and reading them takes hundreds of requests. */
+const SHORTLIST_MAX_AGE_MS = 24 * 60 * 60_000;
 /** How long to back off when GitHub says to stop without saying until when. */
 const DEFAULT_BACKOFF_MS = 60_000;
 
@@ -207,19 +220,24 @@ export class GitHub {
 
   /**
    * GETs JSON, or null for a 404 (or the 409 of an empty repo). `immutable` is for URLs pinned to a
-   * commit or object: they can't change, so a cached copy is used without asking.
+   * commit or object: they can't change, so a cached copy is used without asking. `maxAgeMs`: an
+   * answer this fresh is good enough.
    */
-  private get<T>(path: string, immutable = false): Promise<T | null> {
+  private get<T>(path: string, immutable = false, maxAgeMs = 0): Promise<T | null> {
     return this.once(`GET ${path}`, async () => {
       const cached = this.readCache(path);
       if (cached && immutable) return cached.body as T;
+      if (cached?.saved && Date.now() - cached.saved < maxAgeMs) return cached.body as T;
       const res = await this.request("GET", path, cached?.etag);
-      if (res.status === 304 && cached) return cached.body as T;
+      if (res.status === 304 && cached) {
+        if (maxAgeMs) this.writeCache(path, { ...cached, saved: Date.now() });
+        return cached.body as T;
+      }
       if (res.status === 404 || res.status === 409) return null;
       if (!res.ok) throw new GitHubError(`GitHub said ${res.status} for ${path}`);
       const body = (await res.json()) as T;
       const etag = res.headers.get("etag");
-      if (etag || immutable) this.writeCache(path, { etag, body });
+      if (etag || immutable) this.writeCache(path, { etag, body, saved: Date.now() });
       return body;
     });
   }
@@ -229,6 +247,24 @@ export class GitHub {
     const q = encodeURIComponent(`${term} topic:herdr-mod fork:true`);
     const found = await this.get<{ items: RepoHit[] }>(`/search/repositories?q=${q}&per_page=30`);
     return found?.items ?? [];
+  }
+
+  /** Every repo with the herdr-mod topic, forks included. Up to a day old. */
+  async topicRepos(): Promise<RepoHit[]> {
+    const q = encodeURIComponent("topic:herdr-mod fork:true");
+    const repos = new Map<string, RepoHit>();
+    for (let page = 1; page <= SEARCH_PAGES; page++) {
+      const url = `/search/repositories?q=${q}&per_page=${SEARCH_PAGE_SIZE}&page=${page}`;
+      const found = await this.get<{ items: RepoHit[] }>(url, false, SHORTLIST_MAX_AGE_MS);
+      for (const hit of found?.items ?? []) repos.set(hit.full_name, hit);
+      if ((found?.items.length ?? 0) < SEARCH_PAGE_SIZE) break;
+    }
+    return [...repos.values()];
+  }
+
+  /** The repo's whole tree at its default branch, or null if it's gone or empty. Up to a day old. */
+  repoTree(repo: string): Promise<RepoTree | null> {
+    return this.get<RepoTree>(`/repos/${repo}/git/trees/HEAD?recursive=1`, false, SHORTLIST_MAX_AGE_MS);
   }
 
   /** The folders under mods/ on the repo's default branch. */

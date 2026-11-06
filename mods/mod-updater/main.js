@@ -180,6 +180,12 @@ function versions(m) {
   return out.join(" · ");
 }
 
+/** The one repo holding every file, if there's one, whatever partial matches sit beside it. Still only a copy, so the person confirms it. */
+function soleExact(m) {
+  const exact = (m.suggestions ?? []).filter((s) => s.exact);
+  return exact.length === 1 ? exact[0] : null;
+}
+
 const needsAttention = (m) =>
   m.status === "update_available" || m.status === "modified" || m.status === "error" ||
   (m.status === "unlinked" && !m.cloned_from && m.name !== MOD_NAME); // Clones are never updated. This mod comes with hmod.
@@ -376,7 +382,7 @@ export default class ModUpdates extends View {
     this.linkBusy = true;
     this.linkError = null;
     cx.notify();
-    const r = await hmod(["link", mod, repo, ...(path ? ["--path", path] : []), "--json"]);
+    const r = await hmod(["link", mod, repo, ...(path ? ["--path", path] : []), "--dialog", "--json"]);
     this.linkBusy = false;
     if (!r.ok) {
       this.linkError = parsed(r.stdout)?.error ?? r.text;
@@ -462,7 +468,7 @@ export default class ModUpdates extends View {
     switch (m.status) {
       case "update_available": return ["Update available", t.accent];
       case "modified": return ["Edited locally", t.blocked];
-      case "unlinked": return ["No source known", t.muted];
+      case "unlinked": return [soleExact(m) ? "Source found" : "No source known", t.muted];
       case "error": return ["Error", t.blocked];
       default: return ["Up to date", t.dim];
     }
@@ -475,6 +481,7 @@ export default class ModUpdates extends View {
     if (row?.state === "updated") return row.version ? `Now at ${row.version}` : "";
     if (row) return versions(m);
     if (m.status === "error") return m.message;
+    if (m.status === "unlinked" && soleExact(m)) return `${soleExact(m).repo}: confirm it before updating`;
     if (m.status === "unlinked") return m.suggestions?.length ? `${plural(m.suggestions.length, "possible source")} found` : "Where this mod came from isn't known";
     if (m.status === "modified") {
       const files = m.changed.slice(0, 3).join(", ") + (m.changed.length > 3 ? ", …" : "");
@@ -493,7 +500,7 @@ export default class ModUpdates extends View {
     if (m.status === "update_available") return this.button(t, id, "Update", updating, { primary: true, enabled: on });
     // With nothing newer, updating over local edits would do nothing.
     if (m.status === "modified") return m.remote_checked && !m.update_available ? null : this.button(t, id, "Update", updating, { enabled: on });
-    if (m.status === "unlinked") return this.button(t, id, "Link source", () => this.toggleLink(m), { enabled: on });
+    if (m.status === "unlinked") return this.button(t, id, soleExact(m) ? "Confirm source" : "Link source", () => this.toggleLink(m), { enabled: on });
     if (m.status === "error") return this.button(t, id, "Retry", act((cx) => this.check(cx)), { enabled: on });
     return null;
   }
@@ -504,8 +511,10 @@ export default class ModUpdates extends View {
       .child(v_flex().flex_1().min_w(0)
         .child(div().truncate().text_color(t.foreground).child(`${s.repo} · ${s.path}`))
         .child(div().truncate().text_size(11).text_color(t.dim).child(s.why)))
-      .child(this.button(t, `mu-offer-${i}`, "Link", act((cx) => this.link(cx, s.repo, s.path)), { enabled: on }));
+      .child(this.button(t, `mu-offer-${i}`, "Link", act((cx) => this.link(cx, s.repo, s.path)), { primary: s === soleExact(m), enabled: on }));
     return v_flex().flex_none().gap(8).pt(8).text_size(12)
+      .when(Boolean(m.suggestions?.length), (el) => el.child(div().flex_none().text_color(t.muted)
+        .child("Matching files don't prove who made a mod: anyone can publish a copy. Link only a repo you recognise.")))
       .children((m.suggestions ?? []).map(offer))
       .child(h_flex().flex_none().gap(8).items_center()
         .child(Input.new(this.linkInput).flex_1().min_w(0).h(28).px(8).items_center().rounded(6).border(1)
