@@ -217,7 +217,7 @@ async function inspectLinked(gh: GitHub, record: SourceRecord): Promise<Upstream
 /** Asks GitHub or origin about one mod. Null for a mod with nothing to ask about. */
 async function inspect(gh: GitHub, item: InventoryItem, sources: Sources, now: string): Promise<Saved | null> {
   const base = { checked_at: now, error: null, upstream: null, clone: null, suggestions: [] };
-  if (item.kind === "herdr" || item.cloned_from || item.problem) return null;
+  if (item.kind === "herdr" || item.kind === "managed" || item.cloned_from || item.problem) return null;
   if (item.adapter) {
     const source = localStatus(item, sources).adapter_source;
     return source ? { ...base, clone: await inspectClone(source) } : null;
@@ -300,7 +300,7 @@ function present(item: InventoryItem, sources: Sources, saved: Saved | undefined
     checked_at: saved?.checked_at ?? null,
     clone: null,
   };
-  if (!saved || local.status === "error" || local.status === "herdr" || item.cloned_from) return entry;
+  if (!saved || local.status === "error" || local.status === "herdr" || local.status === "managed" || item.cloned_from) return entry;
 
   const record = sources[item.name];
   const unknown = record?.commit === null; // What's saved can't be about a baseline nobody's worked out.

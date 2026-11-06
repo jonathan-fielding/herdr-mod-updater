@@ -9,12 +9,16 @@ export type ModKind =
   | "herdr"
   /** Installed from a local git clone by its own tool (see CLONE_ADAPTERS). Never gets GitHub files. */
   | "clone-installed"
+  /** Holds a `.hmod-managed` file: another tool installs and updates it (see `managed_by`). */
+  | "managed"
   /** Everything else, including the person's own mods and mod.clone copies (see `cloned_from`). */
   | "third-party";
 
 export type ModStatus =
   /** Updates with the app: no Update button. */
   | "herdr"
+  /** Another tool installs and updates it: no Update button. */
+  | "managed"
   | "up_to_date"
   | "update_available"
   /** Local files differ from the baseline in sources.json; `changed` lists them. */
@@ -80,6 +84,8 @@ export interface ModEntry {
   adapter: string | null;
   /** The folder a clone-installed mod is installed from; null otherwise. */
   adapter_source: string | null;
+  /** Who manages a managed mod: the first line of its `.hmod-managed` file. Null otherwise. */
+  managed_by: string | null;
   /** Relative paths that differ from the baseline (or, clone-installed, from adapter_source). */
   changed: string[];
   /**
