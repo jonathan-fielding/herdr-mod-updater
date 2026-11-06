@@ -11,13 +11,15 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { exec, readTextFile, theme, home, props, openOverlay, closeOverlay, shared, setShared } from "herdr";
+import { exec, readTextFile, theme, home, props, openOverlay, closeOverlay, run, shared, setShared } from "herdr";
 import { HMOD, HMOD_DATA } from "./hmod-path.js";
 
 const MOD_NAME = "mod-updater";
 const SETUP_URL = "https://github.com/jonathan-fielding/herdr-mod-updater";
 const STALE_MS = 6 * 60 * 60 * 1000;
 const POLL_MS = 500;
+/** How often the status bar button rereads the last check. It never starts one. */
+const BAR_POLL_MS = 60000;
 /** How often a running job's process is looked for, in polls. */
 const ALIVE_EVERY = 10;
 /** Polls to wait for a job's log to show that job before giving up on it. */
@@ -185,6 +187,7 @@ const needsAttention = (m) =>
 export default class ModUpdates extends View {
   init(_props, cx) {
     if (props()?.ask) return this.initAsk(cx);
+    if (props()?.bar) return this.initBar(cx);
     this.data = null;
     this.error = null;
     this.notSetUp = !HMOD;
@@ -208,6 +211,31 @@ export default class ModUpdates extends View {
       if (this.data && !this.running() && this.stale()) await this.check(cx);
       cx.notify();
     });
+  }
+
+  /** The status bar button: `{"mod": "mod-updater", "props": {"bar": true}}` in a layout. */
+  initBar(cx) {
+    this.waiting = 0;
+    if (!HMOD) return;
+    cx.timer.every(BAR_POLL_MS, (cx) => cx.spawn(async (cx) => this.reloadBar(cx)));
+    cx.spawn(async (cx) => this.reloadBar(cx));
+  }
+
+  async reloadBar(cx) {
+    const r = await hmod(["check", "--cached", "--json"]);
+    const out = parsed(r.stdout);
+    if (!r.ok || !out?.mods) return;
+    this.waiting = out.mods.filter((m) => m.status === "update_available").length;
+    cx.notify();
+  }
+
+  renderBar(t) {
+    const label = this.waiting ? `Mod updates (${this.waiting})` : "Mod updates";
+    return h_flex().id("mu-bar").size_full().px(12).items_center().justify_end().cursor_pointer()
+      .bg(t.chrome).border_t(1).border_color(t.border).text_size(11.8)
+      .text_color(this.waiting ? t.foreground : t.dim)
+      .on_click(() => run("mod.open", { name: MOD_NAME }))
+      .child(label);
   }
 
   /** Whether a job hasn't been seen to its end. */
@@ -565,6 +593,7 @@ export default class ModUpdates extends View {
   render(cx) {
     const t = theme();
     if (props()?.ask) return this.renderAsk(t);
+    if (props()?.bar) return this.renderBar(t);
     const mods = this.data?.mods ?? [];
     const free = !this.running() && !this.notSetUp;
     const n = mods.filter((m) => m.status === "update_available").length;

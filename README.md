@@ -141,6 +141,16 @@ To use a key, add this to the `global` section of `~/.config/herdr-app/keys.json
 
 The key opens the dialog, and pressing it again closes it.
 
+### 5. Add a status bar button (optional)
+
+To open the dialog from the status bar, add a block to the `status` row of your own layout in `~/.config/herdr-app/layouts/` (a copy made with `layout.clone`, because Herdr replaces its shipped layouts):
+
+```json
+{ "id": "status-mods", "type": "block", "content": { "mod": "mod-updater", "props": { "bar": true } }, "size": { "px": 112 }, "resizable": false }
+```
+
+It reads **Mod updates**, or **Mod updates (2)** with updates waiting. The count comes from the last check and is reread every minute. The button never checks GitHub itself, so the count only moves when a check runs, for example when you open the dialog.
+
 ### From the Herdr mod gallery
 
 Herdr's gallery copies `mods/mod-updater/` into your mods folder and runs `herdr-app check`. That gives you the dialog and nothing else: it's a front end for the `hmod` CLI, which the gallery doesn't install. Until the CLI is set up, the dialog says so and links here.

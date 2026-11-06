@@ -27,6 +27,8 @@ const world = {
   timers: [] as { ms: number; fn: (cx: any) => void }[],
   overlays: [] as any[],
   closed: [] as string[],
+  /** Commands the mod ran. */
+  ran: [] as { name: string; args: unknown }[],
   /** hmod commands that ran through exec and returned. */
   calls: [] as string[][],
   /** hmod commands started as detached jobs. */
@@ -124,6 +126,7 @@ mock.module("herdr", () => ({
   props: () => world.props,
   openOverlay: (o: any) => void world.overlays.push(o),
   closeOverlay: (id: string) => void world.closed.push(id),
+  run: (name: string, args: unknown) => void world.ran.push({ name, args }),
   shared: (k: string) => world.shared[k] ?? null,
   setShared: (k: string, v: unknown) => void (world.shared[k] = v),
 }));
@@ -161,7 +164,7 @@ const available = (name: string, more: any = {}) =>
 
 beforeEach(() => {
   Object.assign(world, {
-    shared: {}, props: {}, timers: [], overlays: [], closed: [], calls: [], jobs: [], answers: {},
+    shared: {}, props: {}, timers: [], overlays: [], closed: [], ran: [], calls: [], jobs: [], answers: {},
     execError: null, log: null, alive: true, real: false, cached: checked([]),
   });
 });
@@ -719,5 +722,60 @@ describe("a job in a real shell", () => {
     await press(s, "mu-all");
     await until(s, () => !s.v.running());
     expect(textOf(tree(s))).toContain("needs the hmod CLI");
+  });
+});
+
+describe("the status bar button", () => {
+  const bar = async (View: any = ModUpdates) => {
+    world.props = { bar: true };
+    return start(View);
+  };
+
+  test("says nothing extra when no updates are waiting", async () => {
+    world.cached = checked([entry("quota", "up_to_date")]);
+    expect(textOf(tree(await bar())).trim()).toBe("Mod updates");
+  });
+
+  test("counts only what Update all would install", async () => {
+    world.cached = checked([available("a"), available("b"), entry("mine", "modified", { update_available: true }), entry("q", "unlinked")]);
+    expect(textOf(tree(await bar()))).toContain("Mod updates (2)");
+  });
+
+  test("a click opens the dialog", async () => {
+    await press(await bar(), "mu-bar");
+    expect(world.ran).toEqual([{ name: "mod.open", args: { name: "mod-updater" } }]);
+  });
+
+  test("only reads the last check: it never starts one, even when that check is old", async () => {
+    world.cached = checked([available("a")], minutesAgo(60 * 24));
+    await bar();
+    expect(world.calls).toEqual([["check", "--cached", "--json"]]);
+    expect(world.jobs).toEqual([]);
+  });
+
+  test("picks up a new count on its slow timer", async () => {
+    world.cached = checked([available("a")]);
+    const s = await bar();
+    world.cached = checked([]);
+    for (const t of world.timers) t.fn(s.cx);
+    await s.cx.settle();
+    expect(textOf(tree(s)).trim()).toBe("Mod updates");
+  });
+
+  test("keeps its count when a reread fails", async () => {
+    world.cached = checked([available("a")]);
+    const s = await bar();
+    world.answers["check --cached"] = { code: 1, stdout: "", stderr: "nope" };
+    for (const t of world.timers) t.fn(s.cx);
+    await s.cx.settle();
+    expect(textOf(tree(s))).toContain("Mod updates (1)");
+  });
+
+  test("still opens the dialog when the CLI isn't set up, and runs nothing", async () => {
+    const s = await bar(PlainCopy);
+    expect(world.calls).toEqual([]);
+    expect(world.timers).toEqual([]);
+    await press(s, "mu-bar");
+    expect(world.ran).toHaveLength(1);
   });
 });
