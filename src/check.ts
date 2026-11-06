@@ -2,12 +2,12 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { diffTrees, hashTree, atomicWrite } from "./fsutil.ts";
-import { createGitHub, GitHubError, MAX_COMMITS, type CommitRef, type GitHub } from "./github.ts";
-import { localStatus, scanMods, type InventoryItem } from "./inventory.ts";
+import { createGitHub, GitHubError, MAX_COMMITS, type CommitRef, type GitHub, type RepoIdentity } from "./github.ts";
+import { listMods, localStatus, scanMods, type InventoryItem } from "./inventory.ts";
 import { findSource, findVersion, type Suggestion } from "./match.ts";
-import type { ModEntry, SourceRecord, Sources } from "./model.ts";
+import type { ListResult, ModEntry, SourceChange, SourceChangeKind, SourceRecord, SourceRef, Sources } from "./model.ts";
 import { herdrHome, hmodHome } from "./paths.ts";
-import { loadSources, updateSources } from "./store.ts";
+import { isPinned, loadSources, logLink, updateSources } from "./store.ts";
 
 export type { Suggestion } from "./match.ts";
 
@@ -40,6 +40,13 @@ interface CloneState {
   note: string | null;
 }
 
+/** A hold, and the pins it was found against: confirming or relinking moves those, which ends it. */
+interface Hold extends SourceChange {
+  commit: string | null;
+  repo_id?: number;
+  owner_id?: number;
+}
+
 /** One mod's result in check.json. */
 interface Saved {
   checked_at: string;
@@ -48,6 +55,9 @@ interface Saved {
   upstream: Upstream | null;
   clone: CloneState | null;
   suggestions: Suggestion[];
+  hold?: Hold | null;
+  /** This check followed a rename from this name. */
+  renamed_from?: string | null;
 }
 
 interface CheckFile {
@@ -152,29 +162,127 @@ async function inspectClone(source: string): Promise<CloneState> {
   return { ...state, upstream, ahead };
 }
 
+const gone = ({ repo, path, branch }: SourceRef) => new GitHubError(`${path} isn't in ${repo}${branch ? ` on ${branch}` : ""} any more`);
+
 /**
- * Works out a hand-linked mod's baseline, which takes GitHub: linking stays offline. Local files
- * equal to a version make that version the baseline. Anything else counts as edited, against HEAD,
- * so nothing replaces it unasked. Throws if it can't tell: the baseline stays unknown.
+ * A mod's baseline from what's in the repo now. Local files equal to a version make that version the
+ * baseline. Anything else counts as edited, against HEAD, so nothing replaces it unasked. Throws if
+ * it can't tell.
  */
-export async function resolveBaseline(gh: GitHub, name: string, dir: string, record: SourceRecord): Promise<SourceRecord> {
+async function workOutBaseline(gh: GitHub, dir: string, record: SourceRecord): Promise<SourceRecord> {
   const { repo, path, branch } = record;
-  const gone = () => new GitHubError(`${path} isn't in ${repo}${branch ? ` on ${branch}` : ""} any more`);
+  const { baseline_assumed: _, ...rest } = record;
   const commits = await gh.folderCommits(repo, path, branch);
   const head = commits?.[0]?.sha;
-  if (!commits || !head) throw gone();
+  if (!commits || !head) throw gone(record);
   const headFiles = await gh.treeAt(repo, path, head);
-  if (!headFiles) throw gone();
+  if (!headFiles) throw gone(record);
   const local = hashTree(dir);
   const commit = await findVersion(gh, repo, path, commits, local);
-  const resolved: SourceRecord = commit
-    ? { repo, path, branch, commit, files: local }
-    : { repo, path, branch, commit: head, files: headFiles, baseline_assumed: true };
+  return commit ? { ...rest, commit, files: local } : { ...rest, commit: head, files: headFiles, baseline_assumed: true };
+}
+
+/** Works out a hand-linked mod's baseline and records it. Throws if it can't tell: it stays unknown. */
+async function resolveBaseline(gh: GitHub, name: string, dir: string, record: SourceRecord): Promise<SourceRecord> {
+  const { repo, path, branch } = record;
+  const resolved = await workOutBaseline(gh, dir, record);
   return updateSources((sources) => {
     const latest = sources[name];
     if (latest?.commit !== null || latest.repo !== repo || latest.path !== path || latest.branch !== branch) return latest ?? resolved;
     return (sources[name] = resolved);
   });
+}
+
+const short = (commit: string) => commit.slice(0, 7);
+
+function unconfirmed(record: SourceRecord): SourceChange {
+  return {
+    what: ["unconfirmed"],
+    detail: `This link to ${record.repo} needs confirming once: it was made before hmod recorded who owns a repo. Confirm only if you trust ${record.repo}.`,
+  };
+}
+
+/** How the repo's ids differ from the pinned ones, going by what GitHub returned. */
+function identityChange(record: SourceRecord, now: RepoIdentity): SourceChange | null {
+  const what: SourceChangeKind[] = [];
+  if (now.repo_id !== record.repo_id) what.push("repo_id");
+  if (now.owner_id !== record.owner_id) what.push("owner");
+  if (!what.length) return null;
+  const detail = what.includes("repo_id")
+    ? `${record.repo} is a different repo now, owned by ${now.owner}: the name may have been registered again.`
+    : `${record.repo} has a new owner: it's ${now.repo} now, owned by ${now.owner}.`;
+  return { what, detail };
+}
+
+/** Whether `head` builds on the baseline. Anything else means the history isn't the one the person trusted. */
+async function historyChange(gh: GitHub, record: SourceRecord, head: string, defaultBranch: string): Promise<SourceChange | null> {
+  const baseline = record.commit!;
+  const changed = (detail: string): SourceChange => ({ what: ["history"], detail });
+  let comparison = await gh.compare(record.repo, baseline, head);
+  // `head` is the newest commit to touch the folder, so a baseline taken from a later commit that
+  // didn't is ahead of it. Then the branch itself has to contain the baseline.
+  if (comparison === "behind") comparison = await gh.compare(record.repo, baseline, record.branch ?? defaultBranch);
+  if (comparison === "ahead" || comparison === "identical") return null;
+  if (comparison === null) return changed(`The history of ${record.repo} was replaced: the installed commit ${short(baseline)} is gone from it.`);
+  if (comparison === "behind") return changed(`${record.repo} went backwards: its newest commit is older than the installed commit ${short(baseline)}.`);
+  return changed(`The history of ${record.repo} was rewritten: its newest commit doesn't follow from the installed commit ${short(baseline)}.`);
+}
+
+function followRename(name: string, record: SourceRecord, repo: string): Promise<SourceRecord> {
+  return updateSources((sources) => {
+    const latest = sources[name];
+    if (!latest || latest.repo !== record.repo || latest.repo_id !== record.repo_id) return latest ?? record;
+    const { path, branch } = latest;
+    logLink({ event: "rename", mod: name, repo, path, branch, via: "hmod", offered_because: null, renamed_from: latest.repo });
+    latest.repo = repo;
+    return latest;
+  });
+}
+
+export interface Verified {
+  /** The record now: renamed, and with its baseline, if those were needed. */
+  record: SourceRecord;
+  /** What stopped it. Everything else here means nothing until this is null. */
+  change: SourceChange | null;
+  /** The newest commit to touch the mod, which `change` being null vouches for. */
+  head: string | null;
+  renamed_from: string | null;
+}
+
+/**
+ * Whether a linked mod's source is still the one the person trusted. A check and an update both go
+ * through this, so neither relies on the other. Throws when it can't tell, which is an error for
+ * that mod and never a hold: only a real answer from GitHub says something changed.
+ */
+export async function verifySource(gh: GitHub, name: string, dir: string, record: SourceRecord): Promise<Verified> {
+  if (!isPinned(record)) return { record, change: unconfirmed(record), head: null, renamed_from: null };
+  const now = await gh.repoIdentity(record.repo);
+  if (!now) throw gone(record);
+  const change = identityChange(record, now);
+  if (change) return { record, change, head: null, renamed_from: null };
+  const renamed_from = now.repo === record.repo ? null : record.repo;
+  const followed = renamed_from ? await followRename(name, record, now.repo) : record;
+  const known = followed.commit === null ? await resolveBaseline(gh, name, dir, followed) : followed;
+  const head = (await gh.folderCommits(known.repo, known.path, known.branch))?.[0]?.sha;
+  if (!head) throw gone(known);
+  return { record: known, change: await historyChange(gh, known, head, now.default_branch), head, renamed_from };
+}
+
+/**
+ * The record with the repo's current ids, for after the person has said to trust it. The baseline
+ * stays if the history still leads from it. If not it's worked out again from what the repo holds,
+ * so local files only become it by equalling a version, never because they're what's installed.
+ */
+export async function repin(gh: GitHub, dir: string, record: SourceRecord): Promise<SourceRecord> {
+  const now = await gh.repoIdentity(record.repo);
+  if (!now) throw gone(record);
+  const pinned: SourceRecord = { ...record, repo: now.repo, repo_id: now.repo_id, owner_id: now.owner_id };
+  if (pinned.commit !== null) {
+    const head = (await gh.folderCommits(pinned.repo, pinned.path, pinned.branch))?.[0]?.sha;
+    if (!head) throw gone(pinned);
+    if (!(await historyChange(gh, pinned, head, now.default_branch))) return pinned;
+  }
+  return workOutBaseline(gh, dir, { ...pinned, commit: null, files: {} });
 }
 
 /** Which of `commits` the baseline came from, newest first; null if none of them. */
@@ -192,12 +300,11 @@ async function baselineIndex(gh: GitHub, record: SourceRecord, commits: CommitRe
 
 async function inspectLinked(gh: GitHub, record: SourceRecord): Promise<Upstream> {
   const { repo, path, branch } = record;
-  const gone = () => new GitHubError(`${path} isn't in ${repo}${branch ? ` on ${branch}` : ""} any more`);
   const commits = await gh.folderCommits(repo, path, branch);
   const head = commits?.[0]?.sha;
-  if (!commits || !head) throw gone();
+  if (!commits || !head) throw gone(record);
   const files = await gh.treeAt(repo, path, head);
-  if (!files) throw gone();
+  if (!files) throw gone(record);
   const atHead = diffTrees(record.files, files).length === 0;
   const index = await baselineIndex(gh, record, commits, atHead);
   const capped = index === null && commits.length >= MAX_COMMITS;
@@ -224,11 +331,57 @@ async function inspect(gh: GitHub, item: InventoryItem, sources: Sources, now: s
   }
   const record = sources[item.name];
   if (record) {
-    const known = record.commit === null ? await resolveBaseline(gh, item.name, item.dir, record) : record;
-    return { ...base, upstream: await inspectLinked(gh, known) };
+    const { record: known, change, renamed_from } = await verifySource(gh, item.name, item.dir, record);
+    if (change) return { ...base, renamed_from, hold: holdOn(known, change) };
+    return { ...base, renamed_from, upstream: await inspectLinked(gh, known) };
   }
   const files = hashTree(item.dir);
   return { ...base, suggestions: await findSource(gh, { name: item.name, title: item.title, files }) };
+}
+
+function holdOn({ commit, repo_id, owner_id }: SourceRecord, change: SourceChange): Hold {
+  return { ...change, commit, repo_id, owner_id };
+}
+
+/** What's holding this record, if anything. Needs no network: a link with no ids is held as it stands. */
+function heldBy(record: SourceRecord, saved: Saved | undefined): SourceChange | null {
+  if (!isPinned(record)) return unconfirmed(record);
+  const hold = saved?.hold;
+  if (!hold || hold.commit !== record.commit || hold.repo_id !== record.repo_id || hold.owner_id !== record.owner_id) return null;
+  return { what: hold.what, detail: hold.detail };
+}
+
+function held<T extends ModEntry>(entry: T, change: SourceChange): T {
+  return { ...entry, status: "source_changed", source_changed: change, note: change.detail };
+}
+
+/** `hmod list`: local status, plus any hold. That takes no network either. */
+export function listWithHolds(): ListResult {
+  const list = listMods();
+  const sources = loadSources();
+  const saved = loadChecks().mods;
+  const mods = list.mods.map((m) => {
+    const record = sources[m.name];
+    const change = m.source && record ? heldBy(record, saved[m.name]) : null;
+    return change ? held(m, change) : m;
+  });
+  return { ...list, mods };
+}
+
+/** Saves what an update found, so the mod shows held without waiting for the next check. */
+export function saveHold(name: string, record: SourceRecord, change: SourceChange): void {
+  const file = loadChecks();
+  const before = file.mods[name];
+  const base = { checked_at: new Date().toISOString(), error: null, upstream: null, clone: null, suggestions: [] };
+  file.mods[name] = { ...base, ...before, error: null, hold: holdOn(record, change) };
+  saveChecks(file);
+}
+
+/** Forgets what was last learned about a mod: it no longer applies. */
+export function forgetCheck(name: string): void {
+  const file = loadChecks();
+  delete file.mods[name];
+  saveChecks(file);
 }
 
 /** Why the last check offered this source, for the link log; null if it wasn't offered. */
@@ -300,14 +453,23 @@ function present(item: InventoryItem, sources: Sources, saved: Saved | undefined
     checked_at: saved?.checked_at ?? null,
     clone: null,
   };
+  const record = sources[item.name];
+  const change = local.source && record ? heldBy(record, saved) : null;
+  if (change) {
+    const out = held({ ...entry, remote_checked: Boolean(saved?.hold) }, change);
+    return saved?.error ? { ...out, note: `${change.detail} Last check failed: ${saved.error}` } : out;
+  }
   if (!saved || local.status === "error" || local.status === "herdr" || item.cloned_from) return entry;
 
-  const record = sources[item.name];
   const unknown = record?.commit === null; // What's saved can't be about a baseline nobody's worked out.
   if (saved.clone && item.adapter) entry = withClone(entry, saved.clone, item.adapter.update);
   else if (saved.upstream && record && !unknown) entry = withLinked(entry, record, saved.upstream);
   else if (!record && !item.adapter) {
     entry = { ...entry, remote_checked: !saved.error, suggestions: saved.suggestions };
+  }
+  if (saved.renamed_from && record) {
+    const renamed = `Renamed on GitHub: ${saved.renamed_from} is ${record.repo} now`;
+    entry = { ...entry, note: entry.note ? `${entry.note}. ${renamed}` : renamed };
   }
 
   if (!saved.error) return entry;
@@ -340,7 +502,8 @@ export async function checkMods(gh: GitHub = createGitHub()): Promise<CheckResul
     const before = previous.mods[item.name];
     const keep = result?.error && before ? { ...before, error: result.error } : result;
     if (keep) file.mods[item.name] = keep;
-    return present(item, latest, result ?? undefined);
+    // A check that couldn't reach GitHub hasn't cleared a hold it found earlier.
+    return present(item, latest, (before?.hold && result?.error ? keep : result) ?? undefined);
   });
   saveChecks(file);
   return {

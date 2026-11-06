@@ -4,6 +4,9 @@ import { dirname, join, resolve } from "node:path";
 import type { ErrorResult, ListResult, ModEntry } from "../src/model.ts";
 
 const CLI = resolve(import.meta.dir, "..", "src", "cli.ts");
+/** Runs the CLI with no way to reach GitHub: the stub in link-stub.ts answers `hmod link`. */
+export const OFFLINE_CLI = ["bun", "--preload", resolve(import.meta.dir, "link-stub.ts"), CLI];
+export const OFFLINE_API = "http://github.invalid";
 
 export interface Homes {
   herdr: string;
@@ -30,8 +33,8 @@ export function makeHomes(shipped: string[] = []): Homes {
   writeFileSync(join(herdr, "installed.json"), JSON.stringify(installed));
 
   const run: Homes["run"] = (...args) => {
-    const p = Bun.spawnSync(["bun", CLI, ...args], {
-      env: { ...process.env, HERDR_APP_HOME: herdr, HMOD_HOME: hmod, HOME: base },
+    const p = Bun.spawnSync([...OFFLINE_CLI, ...args], {
+      env: { ...process.env, HERDR_APP_HOME: herdr, HMOD_HOME: hmod, HOME: base, HMOD_GITHUB_API: OFFLINE_API },
     });
     return { code: p.exitCode, stdout: p.stdout.toString(), stderr: p.stderr.toString() };
   };

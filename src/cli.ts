@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 import pkg from "../package.json" with { type: "json" };
-import { offeredBecause, cachedCheck, checkMods, type CheckEntry, type CheckResult } from "./check.ts";
+import { offeredBecause, cachedCheck, checkMods, listWithHolds, type CheckEntry, type CheckResult } from "./check.ts";
 import { HmodError, UsageError } from "./errors.ts";
-import { linkRefusal, listMods, scanMods } from "./inventory.ts";
+import { createGitHub } from "./github.ts";
+import { linkRefusal, scanMods } from "./inventory.ts";
 import { installMod } from "./modinstall.ts";
-import { updateAll, updateOne, type UpdateEvent, type UpdateResult } from "./update.ts";
-import type { ErrorResult, LinkLogEntry, LinkResult, ListResult, ModEntry, SourceRef, UnlinkResult } from "./model.ts";
-import { logLink, sourceRef, updateSources } from "./store.ts";
+import { confirmOne, updateAll, updateOne, type UpdateEvent, type UpdateResult } from "./update.ts";
+import type { ConfirmResult, ErrorResult, LinkLogEntry, LinkResult, ListResult, ModEntry, SourceRef, UnlinkResult } from "./model.ts";
+import { loadSources, logLink, sourceRef, updateSources } from "./store.ts";
 
 const HELP = `hmod ${pkg.version}: the mods in your Herdr app, and where they came from
 
@@ -17,15 +18,20 @@ const HELP = `hmod ${pkg.version}: the mods in your Herdr app, and where they ca
                                                   that's hmod link. --cached shows the last answer,
                                                   with no network call
   hmod link <mod> <owner/repo> [--path mods/x] [--branch b] [--json]
-                                                  record where a mod came from. Edits are kept safe:
-                                                  the first check works out the version.
-                                                  --path defaults to mods/<mod>, --branch to the
-                                                  repo's default
+                                                  record where a mod came from, and who owns that
+                                                  repo now. Edits are kept safe: the first check
+                                                  works out the version. --path defaults to
+                                                  mods/<mod>, --branch to the repo's default
   hmod unlink <mod> [--json]                      forget where a mod came from
+  hmod confirm <mod> [--json]                     trust a mod's source as it is now. Run this when
+                                                  its status is source_changed, and only if you
+                                                  trust that repo: nothing updates until you do
   hmod update <mod> [--force] [--json]            install the newest version of a mod. Local edits stop
-                                                  it, unless --force: a backup is made either way
+                                                  it, unless --force: a backup is made either way.
+                                                  A changed source stops it, even with --force
   hmod update --all [--json]                      update every mod with an update, one at a time.
-                                                  Modified, unlinked and error mods are skipped.
+                                                  Modified, unlinked, error and source_changed mods
+                                                  are skipped.
                                                   --json prints one line per step of progress
   hmod mod install [--json]                       put Mod updates in Herdr's mods folder
   hmod --version
@@ -60,6 +66,11 @@ async function link(mod: string, repo: string, opts: { path?: string; branch?: s
   if (!item) throw new HmodError(`no mod called ${mod} in the mods folder`);
   const refusal = linkRefusal(item);
   if (refusal) throw new HmodError(`can't link: ${refusal}`);
+  // Who the person is trusting is decided here, or the next owner could be the one pinned. A mod that's
+  // already linked gets no ids this way: only `hmod confirm` changes who's trusted.
+  const already = loadSources()[mod] !== undefined;
+  const identity = already ? null : await createGitHub().repoIdentity(repo);
+  if (!already && !identity) throw new HmodError(`${repo} isn't on GitHub, or it's private`);
   return updateSources((sources) => {
     const existing = sources[mod];
     if (existing) {
@@ -69,9 +80,11 @@ async function link(mod: string, repo: string, opts: { path?: string; branch?: s
       // Relinking would forget the baseline, and with it the installed commit.
       throw new HmodError(`${mod} is already linked to ${existing.repo}: run \`hmod unlink ${mod}\` first`);
     }
-    const source: SourceRef = { repo, path, branch, commit: null };
-    logLink({ event: "link", mod, repo, path, branch, via, offered_because: offeredBecause(mod, repo, path) });
-    sources[mod] = { ...source, files: {} }; // Nothing from disk: it could be edits. A check fills this in.
+    if (!identity) throw new HmodError(`${mod} was unlinked meanwhile: try again`);
+    const { repo: current, repo_id, owner_id } = identity; // Current, in case `repo` was an old name.
+    const source: SourceRef = { repo: current, path, branch, commit: null };
+    logLink({ event: "link", mod, repo: current, path, branch, via, offered_because: offeredBecause(mod, repo, path), repo_id, owner_id });
+    sources[mod] = { ...source, repo_id, owner_id, files: {} }; // Nothing from disk: it could be edits. A check fills this in.
     return { ok: true, mod, source, linked: true };
   });
 }
@@ -87,6 +100,11 @@ function unlink(mod: string, via: Via): Promise<UnlinkResult> {
     delete sources[mod];
     return { ok: true, mod, unlinked };
   });
+}
+
+function confirmText(r: ConfirmResult): string {
+  const line = `confirmed: ${r.mod} -> ${r.source.repo} (repo id ${r.repo_id}, owner id ${r.owner_id})`;
+  return r.counts_as_edited ? `${line}\nthe installed files match no version there, so they count as edited: an update asks first` : line;
 }
 
 function modLine(m: ModEntry): string {
@@ -165,7 +183,7 @@ async function main(args: string[]): Promise<void> {
   };
 
   if (values.cached && command !== "check") throw new UsageError("--cached only goes with hmod check");
-  if (values.dialog && command !== "link" && command !== "unlink") throw new UsageError("--dialog only goes with hmod link and unlink");
+  if (values.dialog && !["link", "unlink", "confirm"].includes(command)) throw new UsageError("--dialog only goes with hmod link, unlink and confirm");
   const via: Via = values.dialog ? "dialog" : "terminal";
   for (const flag of ["force", "all"] as const) {
     if (values[flag] && command !== "update") throw new UsageError(`--${flag} only goes with hmod update`);
@@ -179,7 +197,7 @@ async function main(args: string[]): Promise<void> {
     case "list":
       noFlags("path", "branch");
       if (rest.length) throw new UsageError("usage: hmod list [--json]");
-      return print(listMods(), listText);
+      return print(listWithHolds(), listText);
     case "link": {
       const [mod, repo, ...more] = rest;
       if (!mod || !repo || more.length) {
@@ -195,6 +213,12 @@ async function main(args: string[]): Promise<void> {
       const [mod, ...more] = rest;
       if (!mod || more.length) throw new UsageError("usage: hmod unlink <mod> [--json]");
       return print(await unlink(mod, via), (r) => `${r.unlinked ? "unlinked" : "wasn't linked"}: ${r.mod}`);
+    }
+    case "confirm": {
+      noFlags("path", "branch");
+      const [mod, ...more] = rest;
+      if (!mod || more.length) throw new UsageError("usage: hmod confirm <mod> [--json]");
+      return print(await confirmOne(mod, via), confirmText);
     }
     case "update": {
       noFlags("path", "branch");

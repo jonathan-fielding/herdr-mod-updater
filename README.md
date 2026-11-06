@@ -190,6 +190,7 @@ That removes the dialog, hmod's records and backups, and the command. Your other
 |---|---|---|---|
 | Update available | `update_available` | a newer version exists | **Update** |
 | Edited locally | `modified` | your files differ from what was installed | **Update**, which asks first; none if there's nothing newer |
+| Source changed | `source_changed` | the repo may not be the one you linked: the row says what changed | **Confirm again** and **Unlink** |
 | Source found | `unlinked` | one repo holds every file, which isn't proof it's the source | **Confirm source** |
 | No source known | `unlinked` | hmod can't tell where it came from | **Link source** |
 | Error | `error` | the status couldn't be worked out; the row says why | **Retry** |
@@ -197,9 +198,13 @@ That removes the dialog, hmod's records and backups, and the command. Your other
 | under Updated with Herdr | `herdr` | ships with Herdr and updates with the app | none |
 | under Your clones | `unlinked` | made with `mod.clone`: yours, and never updated | none |
 
+**Source changed** stops a linked mod. When you link, hmod records the ids GitHub gives the repo and its owner. Every check and update compares them, and requires the newest commit to follow from the one you have installed. If the repo moved to another owner, the name now leads to a different repo, or the history was replaced, the mod gets no **Update** button, **Update all** skips it, and `hmod update` refuses it, even with `--force`. A link made before hmod kept these ids shows the same row, asking you to confirm it once.
+
+**Confirm again** trusts the repo as it is now, so use it only if you recognise it. **Unlink** forgets the source. If the history you installed from is gone, your files can't be matched to it, so after confirming the mod shows **Edited locally** unless they equal a version still there. A plain rename needs nothing from you: hmod follows it and shows a note. A failed check is an error and never says **Source changed**.
+
 **Confirm source** and **Link source** show any possible sources hmod found, each with a **Link** button and how well it matched. Link only a repo you recognise. You can also type `owner/repo`, `owner/repo/mods/name`, or paste a GitHub URL of either. Linking starts a check.
 
-**Your edits stay safe when you link.** Linking itself is offline and takes nothing from your files. The check that follows compares them with the 30 newest versions of the mod's folder. If they equal one, that's your version. If not, the mod shows **Edited locally**, with an update on offer: **Update all** skips it, and **Update** asks first and keeps a backup. A version older than those 30 looks edited too. If the check fails, the mod shows an error, and an update does the same work first and stops if it can't finish it.
+**Your edits stay safe when you link.** Linking asks GitHub who the repo is and takes nothing from your files. The check that follows compares them with the 30 newest versions of the mod's folder. If they equal one, that's your version. If not, the mod shows **Edited locally**, with an update on offer: **Update all** skips it, and **Update** asks first and keeps a backup. A version older than those 30 looks edited too. If the check fails, the mod shows an error, and an update does the same work first and stops if it can't finish it.
 
 **While an update runs**, its row goes through `Updating: downloading`, `checking`, `backing up`, `installing` and `verifying`. Buttons stay disabled until it ends. Closing the dialog doesn't stop it.
 
@@ -258,8 +263,8 @@ hmod reads from `api.github.com`, and for a linked mod downloads its files from 
 Everything lives in `~/.herdr-mod-updater/` (`HMOD_HOME` overrides it):
 
 ```
-sources.json                each linked mod: repo, folder, branch, commit, and the hashes of that commit's files
-links.jsonl                 every link and unlink: when, which repo, from where, and why it was offered
+sources.json                each linked mod: repo, its ids and its owner's, folder, branch, commit, and the hashes of that commit's files
+links.jsonl                 every link, unlink, confirm and followed rename: when, which repo, from where, and why it was offered
 check.json                  the last answer from GitHub
 github-cache/               GitHub's replies, kept so repeat checks cost less of the rate limit
 backups/<mod>-<time>/       copies made before updates, the last 3 per mod
@@ -280,13 +285,14 @@ The dialog drives it, so you rarely need it. `hmod --help` lists everything, and
 
 | Command | Does |
 |---|---|
-| `hmod list` | every mod and its status, from local files. With no network, a linked mod's `up_to_date` only means no local edits |
+| `hmod list` | every mod and its status, from local files and the last check. With no network, a linked mod's `up_to_date` only means no local edits |
 | `hmod check` | asks GitHub what's new, and offers possible sources for unlinked mods by content. It never links one |
 | `hmod check --cached` | the last answer, with no network call |
-| `hmod link <mod> <owner/repo> [--path mods/x] [--branch b]` | records where a mod came from. `--path` defaults to `mods/<mod>`, `--branch` to the repo's default |
+| `hmod link <mod> <owner/repo> [--path mods/x] [--branch b]` | records where a mod came from, and who owns that repo now. `--path` defaults to `mods/<mod>`, `--branch` to the repo's default |
 | `hmod unlink <mod>` | forgets where a mod came from |
-| `hmod update <mod> [--force]` | installs the newest version. Local edits stop it, unless `--force` |
-| `hmod update --all` | updates every mod with an update, skipping modified, unlinked and error mods |
+| `hmod confirm <mod>` | trusts a `source_changed` mod's repo as it is now |
+| `hmod update <mod> [--force]` | installs the newest version. Local edits stop it, unless `--force`. A changed source stops it either way |
+| `hmod update --all` | updates every mod with an update, skipping modified, unlinked, error and `source_changed` mods |
 | `hmod mod install` | puts the dialog in Herdr's mods folder |
 | `hmod --version` | the version |
 

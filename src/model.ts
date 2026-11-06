@@ -19,10 +19,24 @@ export type ModStatus =
   | "update_available"
   /** Local files differ from the baseline in sources.json; `changed` lists them. */
   | "modified"
+  /**
+   * The repo isn't provably the one the person linked: `source_changed` says what happened and `note`
+   * says it in words. Nothing updates until they confirm it or unlink it.
+   */
+  | "source_changed"
   /** No source known. */
   | "unlinked"
   /** Couldn't work the status out; `message` says why. */
   | "error";
+
+/** What stopped a linked mod: "unconfirmed" is a link made before hmod stored ids. */
+export type SourceChangeKind = "unconfirmed" | "owner" | "repo_id" | "history";
+
+export interface SourceChange {
+  what: SourceChangeKind[];
+  /** Already worded. */
+  detail: string;
+}
 
 /** What mod.clone writes into the clone's mod.json. */
 export interface ClonedFrom {
@@ -51,6 +65,13 @@ export interface SourceRef {
 export interface SourceRecord extends SourceRef {
   files: Record<string, string>;
   /**
+   * GitHub's numeric ids for the repo and its owner, as the person confirmed them. A transfer keeps
+   * the repo id and changes the owner's; a re-registered name changes both. Missing on links older
+   * than these fields: those stay held until confirmed.
+   */
+  repo_id?: number;
+  owner_id?: number;
+  /**
    * The local files equalled no version found, so the baseline is the HEAD of that moment, standing
    * in for a version nobody knows. HEAD can then equal the baseline and still be worth installing.
    */
@@ -70,6 +91,8 @@ export interface ModEntry {
   message: string | null;
   /** Something worth showing next to the mod, or null. */
   note: string | null;
+  /** Set exactly when status is "source_changed". */
+  source_changed?: SourceChange;
   /** The mod's folder. */
   dir: string;
   /** The linked source; null when unlinked. Never set for herdr, clone-installed or cloned mods. */
@@ -105,18 +128,34 @@ export interface LinkResult {
   linked: boolean;
 }
 
+/** `hmod confirm --json` */
+export interface ConfirmResult {
+  ok: true;
+  mod: string;
+  source: SourceRef;
+  repo_id: number;
+  owner_id: number;
+  /** The installed files match no version in the repo now, so they count as edited. */
+  counts_as_edited: boolean;
+}
+
 /** A line of links.jsonl. */
 export interface LinkLogEntry {
   at: string;
-  event: "link" | "unlink";
+  event: "link" | "unlink" | "confirm" | "rename";
   mod: string;
   repo: string;
   path: string;
   branch: string | null;
-  /** What did it. Only a person can link: the dialog or the terminal. */
-  via: "dialog" | "terminal";
+  /** What did it. Only a person can link or confirm, through the dialog or the terminal. hmod itself only follows a rename. */
+  via: "dialog" | "terminal" | "hmod";
   /** Why the last check offered this source. null: typed by hand, or (unlink) not applicable. */
   offered_because: string | null;
+  /** On a rename: the name before it. */
+  renamed_from?: string;
+  /** On a link or confirm: the ids pinned. */
+  repo_id?: number;
+  owner_id?: number;
 }
 
 /** `hmod unlink --json` */

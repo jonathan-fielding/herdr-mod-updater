@@ -187,7 +187,7 @@ function soleExact(m) {
 }
 
 const needsAttention = (m) =>
-  m.status === "update_available" || m.status === "modified" || m.status === "error" ||
+  m.status === "update_available" || m.status === "modified" || m.status === "source_changed" || m.status === "error" ||
   (m.status === "unlinked" && !m.cloned_from && m.name !== MOD_NAME); // Clones are never updated. This mod comes with hmod.
 
 export default class ModUpdates extends View {
@@ -392,6 +392,30 @@ export default class ModUpdates extends View {
     return this.check(cx); // What it's now linked to decides its status.
   }
 
+  confirmAgain(m, cx) {
+    return this.settleHold(m, cx, ["confirm", m.name, "--dialog", "--json"]);
+  }
+
+  unlink(m, cx) {
+    return this.settleHold(m, cx, ["unlink", m.name, "--dialog", "--json"]);
+  }
+
+  /** The person's answer to a Source changed row. A short command, then a check shows where that leaves the mod. */
+  async settleHold(m, cx, args) {
+    if (this.linkBusy || this.running()) return;
+    this.linkBusy = true;
+    delete this.rows[m.name];
+    cx.notify();
+    const r = await hmod(args);
+    this.linkBusy = false;
+    if (!r.ok) {
+      this.rows[m.name] = { state: "failed", error: parsed(r.stdout)?.error ?? r.text };
+      cx.notify();
+      return;
+    }
+    return this.check(cx);
+  }
+
   // ------------------------------------------------------------- asking before replacing local edits
 
   initAsk(cx) {
@@ -463,11 +487,12 @@ export default class ModUpdates extends View {
       case "updated": return ["Updated", t.done];
       case "unchanged": return ["Already up to date", t.done];
       case "failed": return ["Failed", t.blocked];
-      case "skipped": return ["Skipped", t.muted];
+      case "skipped": return m.status === "source_changed" ? ["Source changed", t.blocked] : ["Skipped", t.muted];
     }
     switch (m.status) {
       case "update_available": return ["Update available", t.accent];
       case "modified": return ["Edited locally", t.blocked];
+      case "source_changed": return ["Source changed", t.blocked];
       case "unlinked": return [soleExact(m) ? "Source found" : "No source known", t.muted];
       case "error": return ["Error", t.blocked];
       default: return ["Up to date", t.dim];
@@ -481,6 +506,7 @@ export default class ModUpdates extends View {
     if (row?.state === "updated") return row.version ? `Now at ${row.version}` : "";
     if (row) return versions(m);
     if (m.status === "error") return m.message;
+    if (m.status === "source_changed") return m.note;
     if (m.status === "unlinked" && soleExact(m)) return `${soleExact(m).repo}: confirm it before updating`;
     if (m.status === "unlinked") return m.suggestions?.length ? `${plural(m.suggestions.length, "possible source")} found` : "Where this mod came from isn't known";
     if (m.status === "modified") {
@@ -495,6 +521,11 @@ export default class ModUpdates extends View {
     const on = !this.running() && !this.linkBusy;
     const id = `mu-act-${m.name}`;
     if (row && row.state !== "failed" && row.state !== "skipped") return null;
+    if (m.status === "source_changed") {
+      return h_flex().flex_none().gap(8)
+        .child(this.button(t, `${id}-confirm`, "Confirm again", act((cx) => this.confirmAgain(m, cx)), { enabled: on }))
+        .child(this.button(t, `${id}-unlink`, "Unlink", act((cx) => this.unlink(m, cx)), { enabled: on }));
+    }
     const updating = m.status === "modified" ? () => this.askUpdate(m) : act((cx) => this.update(m, cx));
     if (row?.state === "failed") return this.button(t, id, "Retry", updating, { enabled: on });
     if (m.status === "update_available") return this.button(t, id, "Update", updating, { primary: true, enabled: on });
