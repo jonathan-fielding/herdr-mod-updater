@@ -24,6 +24,9 @@ export const CLONE_ADAPTERS: CloneAdapter[] = [
   { id: "hmod", marker: ".hmod-installed", generated: ["hmod-path.js"], update: "hmod mod install" },
 ];
 
+/** A hidden file whose first line names the tool that installs and updates the mod. Hidden: Herdr ignores it. */
+export const MANAGED_MARKER = ".hmod-managed";
+
 /** One folder of the mods folder, before its status is worked out. */
 export interface InventoryItem {
   name: string;
@@ -32,6 +35,8 @@ export interface InventoryItem {
   dir: string;
   cloned_from: ClonedFrom | null;
   adapter: CloneAdapter | null;
+  /** Who manages it, when kind is managed. */
+  managed_by: string | null;
   /** mod.json couldn't be read. */
   problem: string | null;
 }
@@ -88,8 +93,13 @@ export function scanMods(): InventoryItem[] {
     const dir = paths.mod(name);
     const { json, problem } = readModJson(dir);
     const title = typeof json.title === "string" && json.title.trim() ? json.title : name;
-    const base = { name, title, dir, cloned_from: null, adapter: null, problem };
+    const base = { name, title, dir, cloned_from: null, adapter: null, managed_by: null, problem };
     if (shipped.has(name)) return { ...base, kind: "herdr" as const, problem: null };
+    const marker = join(dir, MANAGED_MARKER);
+    if (existsSync(marker)) {
+      const by = readFileSync(marker, "utf8").split(/\r?\n/)[0]?.trim() || "another tool";
+      return { ...base, kind: "managed" as const, managed_by: by, problem: null };
+    }
     const adapter = CLONE_ADAPTERS.find((a) => existsSync(join(dir, a.marker))) ?? null;
     if (adapter) return { ...base, kind: "clone-installed" as const, adapter };
     return { ...base, kind: "third-party" as const, cloned_from: clonedFrom(json) };
@@ -99,6 +109,7 @@ export function scanMods(): InventoryItem[] {
 /** Why hmod won't link this mod, or null if it can be. */
 export function linkRefusal(item: InventoryItem): string | null {
   if (item.kind === "herdr") return `${item.name} ships with Herdr and updates with the app`;
+  if (item.kind === "managed") return `${item.name} is managed by ${item.managed_by}: update it there`;
   if (item.adapter) return `${item.name} is installed from a local clone: update it with \`${item.adapter.update}\``;
   if (item.cloned_from) return `${item.name} is your own clone of ${item.cloned_from.name}: clones are never updated`;
   return null;
@@ -130,10 +141,12 @@ export function localStatus(item: InventoryItem, sources: Sources): ModEntry {
     cloned_from: item.cloned_from,
     adapter: item.adapter?.id ?? null,
     adapter_source: null,
+    managed_by: item.managed_by,
     changed: [],
     remote_checked: false,
   };
   if (item.kind === "herdr") return { ...entry, status: "herdr" };
+  if (item.kind === "managed") return { ...entry, status: "managed", note: `Managed by ${item.managed_by}` };
   if (item.problem) return { ...entry, status: "error", message: item.problem };
   try {
     if (item.adapter) return cloneInstalledStatus(entry, item.adapter);

@@ -1,9 +1,25 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ErrorResult, ListResult, ModEntry } from "../src/model.ts";
 
 const CLI = resolve(import.meta.dir, "..", "src", "cli.ts");
+
+const WINDOWS = process.platform === "win32";
+/** The shell test stand-ins run in: Git for Windows' sh there, as the mod uses. */
+export const SH = WINDOWS ? join(Bun.which("git") ?? "", "..", "..", "bin", "sh.exe") : "/bin/sh";
+
+/**
+ * Writes a stand-in program running `body` in sh, and returns the path to run it by. Windows can't
+ * run a script directly, so there it's a .cmd that hands the script to Git's sh.
+ */
+export function fakeProgram(path: string, body: string): string {
+  writeFileSync(path, `#!/bin/sh\n${body}\n`);
+  chmodSync(path, 0o755);
+  if (!WINDOWS) return path;
+  writeFileSync(`${path}.cmd`, `@"${SH}" "${path}" %*\r\n`);
+  return `${path}.cmd`;
+}
 
 export interface Homes {
   herdr: string;

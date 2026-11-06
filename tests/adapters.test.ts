@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { GitHub } from "../src/github.ts";
 import { updateAll, updateOne, type ModCheck, type UpdateEvent } from "../src/update.ts";
 import { FakeGitHub } from "./fake-github.ts";
-import { makeHomes, writeTree, type Homes } from "./helpers.ts";
+import { makeHomes, SH, writeTree, type Homes } from "./helpers.ts";
 
 /** Stands in for hcoord's CLI: `mod install` copies the clone's mod over the installed one. */
 const TOOL = `#!/bin/sh
@@ -51,7 +51,7 @@ beforeEach(() => {
   h.mod("hcoord", {
     "main.js": "hcoord one",
     "mod.json": `{ "title": "Projects", "version": "1.0.0" }`,
-    "hcoord-path.js": `// Written by \`hcoord mod install\`: how this mod runs hcoord.\nexport const HCOORD = ${JSON.stringify(["/bin/sh", join(clone, "tool.sh")])};\n`,
+    "hcoord-path.js": `// Written by \`hcoord mod install\`: how this mod runs hcoord.\nexport const HCOORD = ${JSON.stringify([SH, join(clone, "tool.sh")])};\n`,
     ".hcoord-installed": `${join(clone, "mods", "hcoord")}\n`,
   });
 });
@@ -187,7 +187,9 @@ describe("the hcoord adapter", () => {
   });
 
   test("an origin token doesn't reach the error", async () => {
-    git(clone, "remote", "set-url", "origin", `file://sekret@${join(h.other, "missing.git")}`);
+    // A file URL's path starts with "/", which a Windows path ("C:\...") doesn't.
+    const missing = join(h.other, "missing.git").replaceAll("\\", "/").replace(/^(?!\/)/, "/");
+    git(clone, "remote", "set-url", "origin", `file://sekret@${missing}`);
     const r = await update();
     expect(r.ok).toBe(false);
     expect(r.error).not.toContain("sekret");

@@ -12,7 +12,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, readTextFile, theme, home, props, openOverlay, closeOverlay, run, shared, setShared } from "herdr";
-import { HMOD, HMOD_DATA } from "./hmod-path.js";
+import { HMOD, HMOD_DATA, HMOD_SH } from "./hmod-path.js";
 
 const MOD_NAME = "mod-updater";
 const SETUP_URL = "https://github.com/jonathan-fielding/herdr-mod-updater";
@@ -34,7 +34,11 @@ const STEPS = {
 };
 
 const jobLog = () => `${HMOD_DATA}/mod-job.log`;
-const tilde = (path) => (path.startsWith(`${home()}/`) ? `~${path.slice(home().length)}` : path);
+// Windows paths may mix separators ("C:\Users\x" and ".../backups"), so both sides compare with "/".
+const tilde = (path) => {
+  const [p, h] = [path, home()].map((s) => s.replaceAll("\\", "/"));
+  return p.startsWith(`${h}/`) ? `~${p.slice(h.length)}` : path;
+};
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const act = (fn) => (_e, cx) => cx.spawn(async (cx) => fn(cx));
 
@@ -63,13 +67,15 @@ function parsed(stdout) {
 const RUNNER = `printf '%s\\n{"event":"pid","pid":%s}\\n' "$0" "$$"; "$@" 2>&1; printf '{"event":"exit","code":%s}\\n' "$?"`;
 // Empties the log before returning, so a poll can't take the last job's for this one. No wait: this
 // shell ends at once, which is what gets past exec's limit.
-const START = `log=$1; shift; mkdir -p "\${log%/*}" && : > "$log" && { nohup /bin/sh -c "$0" "$@" > "$log" 2>&1 < /dev/null & }`;
+const START = `log=$1; shift; mkdir -p "\${log%/*}" && : > "$log" && { nohup "$SHELL_PATH" -c "$0" "$@" > "$log" 2>&1 < /dev/null & }`;
 
 /** Starts hmod detached. `job` is what the log's reader needs: { kind: "check" | "all" | "one", mod? }. Returns an error, or null. */
 async function startJob(job, args) {
   const id = Date.now().toString(36);
   try {
-    const r = await exec("/bin/sh", ["-c", START, RUNNER, jobLog(), JSON.stringify({ event: "job", id, ...job }), ...HMOD, ...args]);
+    // The leading space makes Windows quote the header: Git's sh globs an unquoted {...} argument away.
+    const header = ` ${JSON.stringify({ event: "job", id, ...job })}`;
+    const r = await exec(HMOD_SH, ["-c", `SHELL_PATH='${HMOD_SH}'; ${START}`, RUNNER, jobLog(), header, ...HMOD, ...args]);
     if (r.code !== 0) return r.stderr.trim() || `couldn't start hmod (exit code ${r.code})`;
   } catch (e) {
     return String(e?.message ?? e);
@@ -80,7 +86,7 @@ async function startJob(job, args) {
 
 async function jobAlive(pid) {
   try {
-    return (await exec("/bin/sh", ["-c", `kill -0 ${Number(pid)}`])).code === 0;
+    return (await exec(HMOD_SH, ["-c", `kill -0 ${Number(pid)}`])).code === 0;
   } catch {
     return false;
   }
@@ -628,6 +634,7 @@ export default class ModUpdates extends View {
         .children(attention.map((m) => this.row(t, m)))
         .children(this.folded(t, "up", "Up to date", rest.filter((m) => m.status === "up_to_date")))
         .children(this.folded(t, "herdr", "Updated with Herdr", rest.filter((m) => m.status === "herdr")))
+        .children(this.folded(t, "managed", "Managed elsewhere", rest.filter((m) => m.status === "managed")))
         .children(this.folded(t, "clones", "Your clones", rest.filter((m) => m.cloned_from))));
   }
 }

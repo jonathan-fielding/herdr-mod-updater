@@ -4,6 +4,7 @@ import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SH } from "./helpers.ts";
 
 const SOURCE = join(import.meta.dir, "..", "mods", "mod-updater");
 const TEMP = realpathSync(mkdtempSync(join(tmpdir(), "hmod-mod-test-")));
@@ -19,7 +20,7 @@ for (const dir of [MOD, COPY]) {
   copyFileSync(join(SOURCE, "main.js"), join(dir, "main.js"));
 }
 copyFileSync(join(SOURCE, "hmod-path.js"), join(COPY, "hmod-path.js")); // As Herdr's gallery would.
-writeFileSync(join(MOD, "hmod-path.js"), `export const HMOD = ["/bin/sh", ${JSON.stringify(CLI)}];\nexport const HMOD_DATA = ${JSON.stringify(DATA)};\n`);
+writeFileSync(join(MOD, "hmod-path.js"), `export const HMOD = ${JSON.stringify([SH, CLI])};\nexport const HMOD_DATA = ${JSON.stringify(DATA)};\nexport const HMOD_SH = ${JSON.stringify(SH)};\n`);
 
 const world = {
   shared: {} as Record<string, unknown>,
@@ -94,7 +95,7 @@ const textOf = (e: any) => walk(e).filter((x) => typeof x === "string").join(" "
 const byId = (tree: any, id: string) => walk(tree).find((e) => e?.elementId === id);
 
 async function sh(args: string[]) {
-  const p = Bun.spawn(["/bin/sh", ...args], { stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn([SH, ...args], { stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
   return { code, stdout, stderr };
 }
@@ -104,7 +105,7 @@ mock.module("gpui-base", () => ({ v_flex: el, h_flex: el, InputState: FakeInput,
 mock.module("herdr", () => ({
   exec: async (cmd: string, args: string[]) => {
     if (world.execError) throw world.execError;
-    if (cmd === "/bin/sh" && args[0] === "-c") {
+    if (cmd === SH && args[0] === "-c") {
       if (world.real) return sh(args);
       if (args[1]!.startsWith("kill -0")) return { code: world.alive ? 0 : 1, stdout: "", stderr: "" };
       // args: -c START RUNNER log header /bin/sh CLI ...hmod args

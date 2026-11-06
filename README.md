@@ -4,7 +4,7 @@
 
 <p align="center">herdr-mod-updater (<code>hmod</code>) adds a <b>Mod updates</b> dialog to the <a href="https://herdr.dev">Herdr</a> desktop app. It lists every mod you have installed, asks GitHub which ones have something newer, and gives you an <b>Update</b> button per mod and <b>Update all</b> at the top. Every update is checked before it goes in and backed up, and it rolls back if the new version won't load.</p>
 
-<p align="center"><sub>✓&nbsp;Runs&nbsp;on&nbsp;your&nbsp;machine &nbsp; ✓&nbsp;State&nbsp;in&nbsp;plain&nbsp;files &nbsp; ✓&nbsp;Never&nbsp;replaces&nbsp;your&nbsp;edits&nbsp;without&nbsp;asking &nbsp; ✓&nbsp;macOS,&nbsp;Bun</sub></p>
+<p align="center"><sub>✓&nbsp;Runs&nbsp;on&nbsp;your&nbsp;machine &nbsp; ✓&nbsp;State&nbsp;in&nbsp;plain&nbsp;files &nbsp; ✓&nbsp;Never&nbsp;replaces&nbsp;your&nbsp;edits&nbsp;without&nbsp;asking &nbsp; ✓&nbsp;macOS&nbsp;and&nbsp;Windows,&nbsp;Bun</sub></p>
 
 <br />
 
@@ -58,7 +58,7 @@ Mod updates   Checked 5m ago             [ Check for updates ]
 
 ### 🔍 Only what needs you
 
-Mods with an update, local edits, an unknown source or an error get a row with a button. Mods that are fine fold away under **Up to date**, **Updated with Herdr** and **Your clones**. Opening the dialog shows the last answer straight away, and checks again if that answer is more than 6 hours old.
+Mods with an update, local edits, an unknown source or an error get a row with a button. Mods that are fine fold away under **Up to date**, **Updated with Herdr**, **Managed elsewhere** and **Your clones**. Opening the dialog shows the last answer straight away, and checks again if that answer is more than 6 hours old.
 
 ### ⬆️ Updates that can't leave a mod half done
 
@@ -94,7 +94,7 @@ Or do it yourself with the steps below.
 
 ### 1. Check you have the prerequisites
 
-- macOS
+- macOS, or Windows with [Git for Windows](https://gitforwindows.org) (the dialog runs its jobs with Git's `sh`)
 - the Herdr app, with `herdr-app` on your `PATH`
 - git
 - [Bun](https://bun.sh): `curl -fsSL https://bun.sh/install | bash`
@@ -114,6 +114,8 @@ hmod --version
 ```
 
 If `hmod` isn't found, add `~/.local/bin` to your `PATH` (`herdr-app` usually lives there too).
+
+On Windows, skip the shim: run `bun src/cli.ts` from the clone wherever these steps say `hmod`. The dialog doesn't need the shim either.
 
 Keep the clone where it is. The dialog runs hmod from this folder, and updating hmod pulls into it.
 
@@ -195,6 +197,7 @@ That removes the dialog, hmod's records and backups, and the command. Your other
 | Error | `error` | the status couldn't be worked out; the row says why | **Retry** |
 | under Up to date | `up_to_date` | nothing newer | none |
 | under Updated with Herdr | `herdr` | ships with Herdr and updates with the app | none |
+| under Managed elsewhere | `managed` | holds a `.hmod-managed` file: the tool named in it installs and updates it | none |
 | under Your clones | `unlinked` | made with `mod.clone`: yours, and never updated | none |
 
 **Confirm source** and **Link source** show any possible sources hmod found, each with a **Link** button and how well it matched. Link only a repo you recognise. You can also type `owner/repo`, `owner/repo/mods/name`, or paste a GitHub URL of either. Linking starts a check.
@@ -242,6 +245,10 @@ Any file the update added stays until you delete it. The mod will then show as *
 ### Why can't I update a mod that ships with Herdr?
 
 Mods listed in Herdr's `installed.json` update with the app, so anything hmod put there would be replaced. To change one, clone it with `mod.clone`. Clones are yours, and hmod leaves them alone.
+
+### How do I keep hmod away from a mod another tool installs?
+
+Put a `.hmod-managed` file in the mod's folder, with the tool's name on its first line. hmod then lists the mod under **Managed elsewhere**, never offers sources for it, and refuses to link or update it. Installers that copy mods into Herdr can write this file themselves.
 
 ### Does anything leave my machine?
 

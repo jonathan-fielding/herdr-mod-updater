@@ -2,12 +2,16 @@
  * The hmod adapter: hmod updating its own mod, against real, temporary git repos. The clone holds a
  * copy of this repo's own code, so the update runs the real CLI, out of the clone it's pulling.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { cpSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { errorOf, makeHomes, writeTree, type Homes } from "./helpers.ts";
+import { errorOf, makeHomes, SH, writeTree, type Homes } from "./helpers.ts";
 
 const REPO = resolve(import.meta.dir, "..");
+// Each test pulls and reinstalls through real git and bun processes, which Windows starts slowly.
+setDefaultTimeout(30_000);
+/** Paths as hmod writes them for the dialog and git prints them: "/"-separated. */
+const slashed = (path: string) => path.replaceAll("\\", "/");
 const IDENTITY = ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"];
 
 function git(cwd: string, ...args: string[]): string {
@@ -129,7 +133,7 @@ describe("hmod updating itself", () => {
     push({ "mods/mod-updater/main.js": "version two" });
     expect(update().ok).toBe(true);
     expect(argvIn(read("hmod-path.js"))).toEqual(argv);
-    expect(read("hmod-path.js")).toContain(`HMOD_DATA = ${JSON.stringify(h.hmod)}`);
+    expect(read("hmod-path.js")).toContain(`HMOD_DATA = ${JSON.stringify(slashed(h.hmod))}`);
   });
 
   test("a different HMOD_HOME in the shell doesn't replace the mod's data folder", () => {
@@ -139,7 +143,7 @@ describe("hmod updating itself", () => {
     expect(update({ HMOD_HOME: shell }).ok).toBe(true);
     expect(read("main.js")).toBe("version two");
     expect(argvIn(read("hmod-path.js"))).toEqual(argv);
-    expect(read("hmod-path.js")).toContain(`HMOD_DATA = ${JSON.stringify(h.hmod)}`);
+    expect(read("hmod-path.js")).toContain(`HMOD_DATA = ${JSON.stringify(slashed(h.hmod))}`);
   });
 
   test("a default data folder stays the default whatever the shell has", () => {
@@ -171,7 +175,7 @@ describe("hmod updating itself", () => {
     expect(r).toMatchObject({ ok: false, outcome: "failed" });
     expect(r.error).toContain("`hmod mod install` failed");
     expect(r.error).toContain(`now at ${next.slice(0, 7)}: the pull stands`);
-    expect(r.error).toContain(`git -C ${clone} reset --hard ${before.slice(0, 7)}`);
+    expect(r.error).toContain(`git -C ${slashed(clone)} reset --hard ${before.slice(0, 7)}`);
     expect(read("main.js")).toBe(old);
     expect(read("hmod-path.js")).toBe(generated);
 
@@ -183,7 +187,7 @@ describe("hmod updating itself", () => {
   test("a failed install with nothing pulled doesn't offer a way back", () => {
     const pathFile = join(installed(), "hmod-path.js");
     writeFileSync(join(installed(), "main.js"), "older");
-    writeFileSync(pathFile, `export const HMOD = ["/bin/sh", "-c", "echo install broke >&2; exit 3", "sh"];\nexport const HMOD_DATA = "/x";\n`);
+    writeFileSync(pathFile, `export const HMOD = ${JSON.stringify([SH, "-c", "echo install broke >&2; exit 3", "sh"])};\nexport const HMOD_DATA = "/x";\n`);
     const r = update();
     expect(r).toMatchObject({ ok: false, outcome: "failed" });
     expect(r.error).toContain("install broke");

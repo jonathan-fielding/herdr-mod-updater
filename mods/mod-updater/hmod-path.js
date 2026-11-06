@@ -3,3 +3,4 @@
 // to set it up.
 export const HMOD = null;
 export const HMOD_DATA = null;
+export const HMOD_SH = "/bin/sh";

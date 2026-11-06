@@ -23,9 +23,10 @@ describe("hmod mod install", () => {
     expect(readFileSync(join(dest(), "mod.json"), "utf8")).toBe(readFileSync(join(SOURCE, "mod.json"), "utf8"));
     expect(readFileSync(join(dest(), ".hmod-installed"), "utf8").trim()).toBe(SOURCE);
     const argv = JSON.parse(/HMOD = (.*);/.exec(pathFile())![1]!);
-    expect(argv.slice(0, 3)).toEqual(["/usr/bin/env", `HMOD_HOME=${h.hmod}`, `HERDR_APP_HOME=${h.herdr}`]);
-    expect(argv.at(-1)).toEndWith("src/cli.ts");
-    expect(pathFile()).toContain(`HMOD_DATA = ${JSON.stringify(h.hmod)}`);
+    expect(argv[0]).toMatch(/[/\\]env(\.exe)?$/);
+    expect(argv.slice(1, 3)).toEqual([`HMOD_HOME=${h.hmod}`, `HERDR_APP_HOME=${h.herdr}`]);
+    expect(argv.at(-1)).toBe(resolve(SOURCE, "..", "..", "src", "cli.ts"));
+    expect(pathFile()).toContain(`HMOD_DATA = ${JSON.stringify(h.hmod.replaceAll("\\", "/"))}`);
   });
 
   test("the argv it writes really runs hmod, on those homes", () => {

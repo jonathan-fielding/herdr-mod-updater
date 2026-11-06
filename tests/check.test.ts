@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cachedCheck, checkMods, type CheckEntry, type CheckResult } from "../src/check.ts";
@@ -8,6 +8,9 @@ import type { LinkResult, Sources } from "../src/model.ts";
 import { FakeGitHub, inRepo, runCli, sha } from "./fake-github.ts";
 import { makeHomes, writeTree, type Homes } from "./helpers.ts";
 import { updateAll, type UpdateEvent } from "../src/update.ts";
+
+// The clone-installed tests run real git, which Windows starts slowly.
+setDefaultTimeout(30_000);
 
 const injected = { "gpui-kit.d.ts": "// injected", "jsconfig.json": "{}", ".DS_Store": "x" };
 const v1 = { "main.js": "version one", "mod.json": `{ "title": "Quota", "version": "1.0.0" }`, "lib/util.js": "util one" };
@@ -568,7 +571,7 @@ describe("clone-installed mods", () => {
       status: "up_to_date",
       remote_checked: true,
       commits_behind: 0,
-      clone: { root: clone, origin, branch: "main" },
+      clone: { root: clone.replaceAll("\\", "/"), origin, branch: "main" }, // git prints "/"-separated paths
     });
   });
 

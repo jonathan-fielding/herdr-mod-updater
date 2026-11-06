@@ -24,13 +24,18 @@ export interface ModInstallResult {
 /** The mod runs hmod with this exact bun and cli.ts, so it never depends on the app's PATH. */
 export function pathModule(): string {
   const bun = Bun.which("bun") ?? process.execPath;
+  // Windows has no /usr/bin/env or /bin/sh: Git for Windows brings both (and the nohup and kill jobs use).
+  const git = process.platform === "win32" ? join(Bun.which("git") ?? "", "..", "..") : null;
+  const env = git ? join(git, "usr", "bin", "env.exe") : "/usr/bin/env";
+  const sh = git ? join(git, "bin", "sh.exe") : "/bin/sh";
   // exec() takes no environment, so non-default homes go through env(1).
   const homes = ["HMOD_HOME", "HERDR_APP_HOME"].filter((k) => process.env[k]).map((k) => `${k}=${process.env[k]}`);
-  const argv = homes.length ? ["/usr/bin/env", ...homes, bun, CLI] : [bun, CLI];
+  const argv = homes.length ? [env, ...homes, bun, CLI] : [bun, CLI];
   return [
     "// Written by `hmod mod install`: how this mod runs hmod, and where hmod keeps its data.",
     `export const HMOD = ${JSON.stringify(argv)};`,
-    `export const HMOD_DATA = ${JSON.stringify(hmodHome())};`,
+    `export const HMOD_DATA = ${JSON.stringify(hmodHome().replaceAll("\\", "/"))};`,
+    `export const HMOD_SH = ${JSON.stringify(sh.replaceAll("\\", "/"))};`,
     "",
   ].join("\n");
 }

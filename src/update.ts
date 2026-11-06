@@ -470,7 +470,7 @@ async function updateAdapted(item: InventoryItem, entry: ModEntry, step: Step): 
 }
 
 function refusal(item: InventoryItem, entry: ModEntry, force: boolean): string | null {
-  if (item.kind === "herdr" || item.cloned_from) return linkRefusal(item);
+  if (item.kind === "herdr" || item.kind === "managed" || item.cloned_from) return linkRefusal(item);
   if (entry.status === "error") return entry.message;
   if (entry.status === "unlinked") return `no source known for ${item.name}: \`hmod check\` looks for one, or use \`hmod link\``;
   if (entry.status === "modified" && !force) {

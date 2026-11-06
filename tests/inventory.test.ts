@@ -46,6 +46,16 @@ describe("hmod list --json on a home with every kind", () => {
     expect(e.note).toContain("files (0.1.13)");
   });
 
+  test("a mod with .hmod-managed belongs to that tool: never linked or updated", () => {
+    h.mod("desk", { "main.js": "x", ".hmod-managed": "omp-config\r\nmore\n" });
+    expect(h.entry("desk")).toMatchObject({ kind: "managed", status: "managed", managed_by: "omp-config", note: "Managed by omp-config" });
+    for (const args of [["link", "desk", "someone/desk"], ["update", "desk"]]) {
+      const r = h.run(...args, "--json");
+      expect(r.code).toBe(1);
+      expect(errorOf(r)).toContain("managed by omp-config");
+    }
+  });
+
   test("a broken mod.json is an error on that mod alone", () => {
     const e = h.entry("broken");
     expect(e.status).toBe("error");

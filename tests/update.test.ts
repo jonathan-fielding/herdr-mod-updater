@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, sep } from "node:path";
 import { hashTree, withLock } from "../src/fsutil.ts";
 import { GitHub, type TreeEntry } from "../src/github.ts";
 import type { Sources } from "../src/model.ts";
 import { apply, installable, permissionsIn, updateAll, updateOne, type ModCheck, type UpdateEvent } from "../src/update.ts";
 import { FakeGitHub, inRepo, runCli, sha, type FakeCommit } from "./fake-github.ts";
-import { makeHomes, writeTree, type Homes } from "./helpers.ts";
+import { fakeProgram, makeHomes, writeTree, type Homes } from "./helpers.ts";
 
 const injected = { "gpui-kit.d.ts": "// injected", "jsconfig.json": "{}", ".DS_Store": "finder" };
 const v1 = {
@@ -110,7 +110,7 @@ describe("updating a linked mod", () => {
     await updateOne("quota", false, { gh: client(fakeFor("quota")), check });
     expect(check.dirs).toHaveLength(2);
     expect(check.dirs[0]!.startsWith(join(h.hmod, "staging"))).toBe(true);
-    expect(check.dirs[0]!.endsWith("/quota")).toBe(true);
+    expect(check.dirs[0]!.endsWith(`${sep}quota`)).toBe(true);
     expect(check.dirs[1]).toBe(join(h.herdr, "mods", "quota"));
   });
 
@@ -372,7 +372,8 @@ describe("backups", () => {
   test("hold the whole folder, hidden files too", async () => {
     installLinked("quota", { ...v1, ...injected });
     const r = await updateOne("quota", false, { gh: client(fakeFor("quota")), check: checker() });
-    expect(r.backup).toMatch(new RegExp(`^${h.hmod}/backups/quota-\\d{4}-.*Z$`));
+    expect(dirname(r.backup!)).toBe(join(h.hmod, "backups"));
+    expect(basename(r.backup!)).toMatch(/^quota-\d{4}-.*Z$/);
     expect(readFileSync(join(r.backup!, ".DS_Store"), "utf8")).toBe("finder");
     expect(readFileSync(join(r.backup!, "main.js"), "utf8")).toBe("one");
   });
@@ -384,7 +385,7 @@ describe("backups", () => {
     for (const name of [...stamps, ...others]) writeTree(join(h.hmod, "backups", name), { "main.js": "x" });
     const r = await updateOne("quota", false, { gh: client(fakeFor("quota")), check: checker() });
     const left = backups();
-    expect(left).toEqual([...others, stamps[1]!, stamps[2]!, r.backup!.split("/").pop()!].sort());
+    expect(left).toEqual([...others, stamps[1]!, stamps[2]!, basename(r.backup!)].sort());
   });
 });
 
@@ -598,10 +599,7 @@ describe("the lock", () => {
 
 describe("the CLI", () => {
   function fakeHerdrApp(script: string): void {
-    const path = join(h.other, "herdr-app");
-    writeFileSync(path, `#!/bin/sh\n${script}\n`);
-    chmodSync(path, 0o755);
-    process.env.HMOD_HERDR_APP = path;
+    process.env.HMOD_HERDR_APP = fakeProgram(join(h.other, "herdr-app"), script);
   }
 
   test("update --json prints one result and exits 0", async () => {
