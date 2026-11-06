@@ -7,6 +7,7 @@ import type { Sources } from "../src/model.ts";
 import { apply, installable, permissionsIn, updateAll, updateOne, type ModCheck, type UpdateEvent } from "../src/update.ts";
 import { FakeGitHub, inRepo, runCli, sha, type FakeCommit } from "./fake-github.ts";
 import { makeHomes, writeTree, type Homes } from "./helpers.ts";
+import { repoIds } from "./repo-ids.ts";
 
 const injected = { "gpui-kit.d.ts": "// injected", "jsconfig.json": "{}", ".DS_Store": "finder" };
 const v1 = {
@@ -51,7 +52,7 @@ function installLinked(name: string, files: Record<string, string>, commit: stri
   mkdirSync(h.hmod, { recursive: true });
   const path = join(h.hmod, "sources.json");
   const all = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
-  all[name] = { repo, path: `mods/${name}`, branch: null, commit, files: hashTree(dir) };
+  all[name] = { repo, ...repoIds(repo), path: `mods/${name}`, branch: null, commit, files: hashTree(dir) };
   writeFileSync(path, JSON.stringify(all));
   return dir;
 }
@@ -128,7 +129,7 @@ describe("updating a linked mod", () => {
     const dir = installLinked("quota", v1);
     writeTree(dir, injected);
     const upstream = { ...v2, "jsconfig.json": "upstream's", ".DS_Store": "upstream's" };
-    const fake = new FakeGitHub({ "o/r": { commits: [{ sha: sha("two"), files: inRepo("quota", upstream) }] } });
+    const fake = new FakeGitHub({ "o/r": { commits: [{ sha: sha("two"), files: inRepo("quota", upstream) }, { sha: sha("one"), files: inRepo("quota", v1) }] } });
     expect((await updateOne("quota", false, { gh: client(fake), check: checker() })).outcome).toBe("updated");
     expect(installedFile("quota", "jsconfig.json")).toBe("{}");
     expect(installedFile("quota", ".DS_Store")).toBe("finder");
@@ -156,7 +157,8 @@ describe("updating a linked mod", () => {
   test("the folder moved from a file to a folder and back without losing anything", async () => {
     installLinked("quota", { "main.js": "one", lib: "was a file", "pkg/a.js": "was a folder" });
     const upstream = { "main.js": "two", "lib/a.js": "now a folder", pkg: "now a file" };
-    const fake = new FakeGitHub({ "o/r": { commits: [{ sha: sha("two"), files: inRepo("quota", upstream) }] } });
+    const old = { "main.js": "one", lib: "was a file", "pkg/a.js": "was a folder" };
+    const fake = new FakeGitHub({ "o/r": { commits: [{ sha: sha("two"), files: inRepo("quota", upstream) }, { sha: sha("one"), files: inRepo("quota", old) }] } });
     const r = await updateOne("quota", false, { gh: client(fake), check: checker() });
     expect(r.outcome).toBe("updated");
     expect(installedFile("quota", "lib/a.js")).toBe("now a folder");
@@ -303,7 +305,7 @@ describe("refusing unsafe content", () => {
     mkdirSync(h.hmod, { recursive: true });
     writeFileSync(
       join(h.hmod, "sources.json"),
-      JSON.stringify({ quota: { repo: "o/r", path: "mods/quota", branch: null, commit: sha("one"), files: hashTree(real) } }),
+      JSON.stringify({ quota: { repo: "o/r", ...repoIds("o/r"), path: "mods/quota", branch: null, commit: sha("one"), files: hashTree(real) } }),
     );
     const r = await updateOne("quota", false, { gh: client(fakeFor("quota")), check: checker() });
     expect(r).toMatchObject({ ok: false, outcome: "refused" });
@@ -333,7 +335,7 @@ describe("refusing unsafe content", () => {
 });
 
 describe("local edits", () => {
-  test("refused without --force, before asking GitHub", async () => {
+  test("refused without --force", async () => {
     const dir = installLinked("quota", v1);
     writeFileSync(join(dir, "main.js"), "my edit");
     const fake = fakeFor("quota");
@@ -342,7 +344,7 @@ describe("local edits", () => {
     expect(r.error).toContain("main.js");
     expect(r.error).toContain("--force");
     expect(installedFile("quota", "main.js")).toBe("my edit");
-    expect(fake.requests).toEqual([]);
+    expect(fake.requests.some((r) => r.url.pathname.includes("/git/blobs/"))).toBe(false);
     expect(backups()).toEqual([]);
   });
 
@@ -439,7 +441,7 @@ describe("what the result tells the person", () => {
       "main.js": `await exec("ls");\nconst r = await fetch("https://example.com");\nawait hc(["ls"]);`,
       "lib/util.js": "await watchFolder(dir);",
     };
-    const fake = new FakeGitHub({ "o/r": { commits: [{ sha: sha("two"), files: inRepo("quota", upstream) }] } });
+    const fake = new FakeGitHub({ "o/r": { commits: [{ sha: sha("two"), files: inRepo("quota", upstream) }, { sha: sha("one"), files: inRepo("quota", v1) }] } });
     const r = await updateOne("quota", false, { gh: client(fake), check: checker() });
     expect(r.new_permissions).toEqual(["hc", "fetch", "watchFolder"]);
     expect(r.notes.join(" ")).toContain("reaches the network");

@@ -2,6 +2,7 @@
 import { resolve } from "node:path";
 import { gitBlobSha } from "../src/fsutil.ts";
 import type { Homes } from "./helpers.ts";
+import { repoDetails } from "./repo-ids.ts";
 
 export interface FakeCommit {
   sha: string;
@@ -18,6 +19,13 @@ export interface FakeRepo {
   topic?: boolean;
   /** GitHub cut this repo's tree short. */
   truncated?: boolean;
+  /** Who it is, when not the ids that go with its name: a transfer or a repo made again. */
+  repo_id?: number;
+  owner_id?: number;
+  /** Commits that exist but aren't in `commits`' line: comparing from one of them says diverged. */
+  divergedFrom?: string[];
+  /** Commits that exist past the branch's tip, as after it's wound back: comparing from one says behind. */
+  woundBackFrom?: string[];
 }
 
 export interface FakeRequest {
@@ -43,6 +51,9 @@ export class FakeGitHub {
   /** Replaces the base64 of a blob, to stand in for bytes that don't match their SHA. */
   corrupt: ((content: string) => string | null) | null = null;
 
+  /** Old name -> new name. GitHub redirects these, for everything under the repo. */
+  moved: Record<string, string> = {};
+
   constructor(readonly repos: Record<string, FakeRepo>) {}
 
   /** Requests answered with a 304, which GitHub doesn't charge for. */
@@ -50,7 +61,9 @@ export class FakeGitHub {
 
   /** Use as GitHubOptions.fetch. */
   fetch = async (url: string, init: RequestInit): Promise<Response> => {
-    return this.handle(new Request(url, init));
+    const res = this.handle(new Request(url, init));
+    const location = res.headers.get("location");
+    return location ? this.handle(new Request(location, init)) : res; // As real fetch follows it.
   };
 
   handle(req: Request): Response {
@@ -58,6 +71,9 @@ export class FakeGitHub {
     this.requests.push({ method: req.method, url, headers: req.headers });
     if (this.limited) return typeof this.limited === "function" ? this.limited() : (this.limited.clone() as Response);
     if (this.failing?.pattern.test(url.pathname)) return new Response("broken", { status: this.failing.status });
+    const old = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)/)?.[1];
+    const moved = old && this.moved[old];
+    if (moved) return new Response(null, { status: 301, headers: { location: `${url.origin}/repos/${moved}${url.pathname.slice(`/repos/${old}`.length)}${url.search}` } });
     const res = this.route(url, req.method);
     if (!res.ok) return json({ message: "Not Found" }, {}, res.status);
     if (res.bodyJson === undefined) return new Response(null, { status: res.status });
@@ -77,11 +93,24 @@ export class FakeGitHub {
       const start = (Number(url.searchParams.get("page") ?? 1) - 1) * size;
       return ok({ items: this.search(url.searchParams.get("q") ?? "").slice(start, start + size) });
     }
-    const m = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/(.*)$/);
+    const m = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)(?:\/(.*))?$/);
     const repo = m && this.repos[m[1]!];
     if (!m || !repo) return missing;
-    const rest = m[2]!;
+    if (m[2] === undefined) return ok(repoDetails(m[1]!, repo));
+    const rest = m[2];
     const head = repo.commits[0];
+
+    const compared = rest.match(/^compare\/(.+)\.\.\.(.+)$/);
+    if (compared) {
+      const [base, target] = [decodeURIComponent(compared[1]!), decodeURIComponent(compared[2]!)];
+      if (repo.divergedFrom?.includes(base)) return ok({ status: "diverged" });
+      if (repo.woundBackFrom?.includes(base)) return ok({ status: "behind" });
+      const at = (ref: string) => repo.commits.findIndex((c) => c.sha === ref);
+      const from = at(base);
+      const to = /^[0-9a-f]{40}$/.test(target) ? at(target) : 0; // A branch name: its tip.
+      if (from < 0 || to < 0) return missing;
+      return ok({ status: from === to ? "identical" : from > to ? "ahead" : "behind" });
+    }
 
     if (rest === "commits") {
       const path = url.searchParams.get("path") ?? "";

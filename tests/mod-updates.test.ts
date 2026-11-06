@@ -335,6 +335,61 @@ describe("rows", () => {
     expect(world.jobs).toEqual([["check", "--json"]]);
   });
 
+  describe("source_changed", () => {
+    const held = (more: any = {}) => entry("quota", "source_changed", { note: "o/r has a new owner: it's x/r now, owned by x.", source: { repo: "o/r" }, ...more });
+
+    test("says what changed, offers Confirm again and Unlink, and no Update", async () => {
+      world.cached = checked([held()]);
+      const s = await start();
+      expect(rowText(s, "quota")).toContain("Source changed");
+      expect(rowText(s, "quota")).toContain("has a new owner");
+      expect(byId(tree(s), "mu-act-quota")).toBeUndefined();
+      expect(textOf(tree(s))).toContain("Confirm again");
+      expect(textOf(tree(s))).toContain("Unlink");
+      expect(rowText(s, "quota")).not.toContain("Update");
+    });
+
+    test("doesn't count towards Update all or the status bar", async () => {
+      world.cached = checked([held()]);
+      expect(textOf(tree(await start()))).toContain("Update all (0)");
+    });
+
+    test("Confirm again confirms, then checks; nothing happens until it's pressed", async () => {
+      world.cached = checked([held()]);
+      const s = await start();
+      expect(world.calls.some((c) => c[0] === "confirm")).toBe(false);
+      await press(s, "mu-act-quota-confirm");
+      expect(world.calls.at(-1)).toEqual(["confirm", "quota", "--dialog", "--json"]);
+      expect(world.jobs).toEqual([["check", "--json"]]);
+    });
+
+    test("Unlink unlinks, then checks", async () => {
+      world.cached = checked([held()]);
+      const s = await start();
+      await press(s, "mu-act-quota-unlink");
+      expect(world.calls.at(-1)).toEqual(["unlink", "quota", "--dialog", "--json"]);
+      expect(world.jobs).toEqual([["check", "--json"]]);
+    });
+
+    test("a refusal shows in the row, which keeps its choices", async () => {
+      world.cached = checked([held()]);
+      world.answers["confirm quota"] = { code: 1, stdout: JSON.stringify({ ok: false, error: "GitHub said 500" }), stderr: "" };
+      const s = await start();
+      await press(s, "mu-act-quota-confirm");
+      expect(rowText(s, "quota")).toContain("GitHub said 500");
+      expect(byId(tree(s), "mu-act-quota-unlink")).toBeTruthy();
+      expect(world.jobs).toEqual([]);
+    });
+
+    test("skipped by Update all, it still reads Source changed", async () => {
+      world.cached = checked([held()]);
+      const s = await start();
+      s.v.rows = { quota: { state: "skipped", reason: "o/r has a new owner" } };
+      expect(rowText(s, "quota")).toContain("Source changed");
+      expect(rowText(s, "quota")).not.toContain("Skipped");
+    });
+  });
+
   test("up-to-date and Herdr's mods are folded, with no buttons", async () => {
     world.cached = checked([entry("a", "up_to_date", { installed_version: "2.0" }), entry("agents", "herdr", { kind: "herdr" })]);
     const s = await start();

@@ -49,6 +49,19 @@ export interface CommitRef {
   sha: string;
 }
 
+/** Who a repo is now. All of it comes from what GitHub returned, which a rename can make differ from what was asked. */
+export interface RepoIdentity {
+  /** "owner/repo", current. */
+  repo: string;
+  owner: string;
+  repo_id: number;
+  owner_id: number;
+  default_branch: string;
+}
+
+/** Where `head` stands against `base`. */
+export type Comparison = "ahead" | "identical" | "behind" | "diverged";
+
 /** A whole repo's tree at its default branch. */
 export interface RepoTree {
   truncated: boolean;
@@ -85,6 +98,8 @@ const REQUEST_TIMEOUT_MS = 30_000;
 /** GitHub's search stops at 1,000 results, which is this many pages. */
 const SEARCH_PAGES = 10;
 const SEARCH_PAGE_SIZE = 100;
+const COMPARISONS: string[] = ["ahead", "identical", "behind", "diverged"];
+const FULL_NAME = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
 /** The topic's repos are only a shortlist, and reading them takes hundreds of requests. */
 const SHORTLIST_MAX_AGE_MS = 24 * 60 * 60_000;
 /** How long to back off when GitHub says to stop without saying until when. */
@@ -224,22 +239,54 @@ export class GitHub {
    * answer this fresh is good enough.
    */
   private get<T>(path: string, immutable = false, maxAgeMs = 0): Promise<T | null> {
-    return this.once(`GET ${path}`, async () => {
-      const cached = this.readCache(path);
-      if (cached && immutable) return cached.body as T;
-      if (cached?.saved && Date.now() - cached.saved < maxAgeMs) return cached.body as T;
-      const res = await this.request("GET", path, cached?.etag);
-      if (res.status === 304 && cached) {
-        if (maxAgeMs) this.writeCache(path, { ...cached, saved: Date.now() });
-        return cached.body as T;
-      }
-      if (res.status === 404 || res.status === 409) return null;
-      if (!res.ok) throw new GitHubError(`GitHub said ${res.status} for ${path}`);
-      const body = (await res.json()) as T;
-      const etag = res.headers.get("etag");
-      if (etag || immutable) this.writeCache(path, { etag, body, saved: Date.now() });
-      return body;
-    });
+    return this.once(`GET ${path}`, () => this.load<T>(path, immutable, maxAgeMs));
+  }
+
+  private async load<T>(path: string, immutable = false, maxAgeMs = 0): Promise<T | null> {
+    const cached = this.readCache(path);
+    if (cached && immutable) return cached.body as T;
+    if (cached?.saved && Date.now() - cached.saved < maxAgeMs) return cached.body as T;
+    const res = await this.request("GET", path, cached?.etag);
+    if (res.status === 304 && cached) {
+      if (maxAgeMs) this.writeCache(path, { ...cached, saved: Date.now() });
+      return cached.body as T;
+    }
+    if (res.status === 404 || res.status === 409) return null;
+    if (!res.ok) throw new GitHubError(`GitHub said ${res.status} for ${path}`);
+    const body = (await res.json()) as T;
+    const etag = res.headers.get("etag");
+    if (etag || immutable) this.writeCache(path, { etag, body, saved: Date.now() });
+    return body;
+  }
+
+  /**
+   * Who the repo is right now, or null if the name leads nowhere. GitHub redirects a renamed repo and
+   * fetch follows, so this describes what came back, not what was asked for. Asked every time, even
+   * twice in one run: an Update all can take minutes, and this is the check that lets it go ahead.
+   */
+  async repoIdentity(repo: string): Promise<RepoIdentity | null> {
+    const body = await this.load<{ id?: unknown; full_name?: unknown; default_branch?: unknown; owner?: { id?: unknown; login?: unknown } | null }>(`/repos/${repo}`);
+    if (!body) return null;
+    const { id, full_name, default_branch, owner } = body;
+    if (
+      typeof id !== "number" || typeof owner?.id !== "number" || typeof owner.login !== "string" ||
+      typeof full_name !== "string" || !FULL_NAME.test(full_name) || typeof default_branch !== "string"
+    ) {
+      throw new GitHubError(`GitHub sent ${repo}'s details in a form hmod can't read`);
+    }
+    return { repo: full_name, owner: owner.login, repo_id: id, owner_id: owner.id, default_branch };
+  }
+
+  /**
+   * How `head` stands against `base`, or null if GitHub can't compare them: one of them is gone, or
+   * they share no history. Asked every time for the same reason as repoIdentity.
+   */
+  async compare(repo: string, base: string, head: string): Promise<Comparison | null> {
+    const path = `/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`;
+    const body = await this.load<{ status?: string }>(path);
+    if (!body) return null;
+    if (!COMPARISONS.includes(body.status as string)) throw new GitHubError(`GitHub sent a comparison in ${repo} that hmod can't read`);
+    return body.status as Comparison;
   }
 
   /** Repos with the herdr-mod topic that fit `term`, forks included, best first. */

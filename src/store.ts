@@ -12,8 +12,15 @@ function isRecord(v: unknown): v is SourceRecord {
     typeof r.repo === "string" && typeof r.path === "string" &&
     (r.branch === null || typeof r.branch === "string") &&
     (r.commit === null || typeof r.commit === "string") &&
-    typeof r.files === "object" && r.files !== null
+    typeof r.files === "object" && r.files !== null &&
+    (r.repo_id === undefined || typeof r.repo_id === "number") &&
+    (r.owner_id === undefined || typeof r.owner_id === "number")
   );
+}
+
+/** Whether the person has confirmed this link's ids. */
+export function isPinned(r: SourceRecord): boolean {
+  return r.repo_id !== undefined && r.owner_id !== undefined;
 }
 
 /** No prototype, so a mod called "constructor" or "__proto__" is an ordinary key. */

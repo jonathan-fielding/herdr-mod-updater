@@ -7,6 +7,7 @@ import { GitHub, GitHubError, MAX_COMMITS, RateLimitError } from "../src/github.
 import type { LinkResult, Sources } from "../src/model.ts";
 import { FakeGitHub, inRepo, runCli, sha } from "./fake-github.ts";
 import { makeHomes, writeTree, type Homes } from "./helpers.ts";
+import { repoIds } from "./repo-ids.ts";
 import { updateAll, type UpdateEvent } from "../src/update.ts";
 
 const injected = { "gpui-kit.d.ts": "// injected", "jsconfig.json": "{}", ".DS_Store": "x" };
@@ -221,10 +222,10 @@ describe("mods that are never searched for", () => {
 describe("linked mods", () => {
   const link = (name: string, ...more: string[]) => h.json<LinkResult>("link", name, "a/herdr-quota", ...more);
   const fake = () => new FakeGitHub({ "a/herdr-quota": { commits: history } });
-  /** Installed at a commit GitHub's history no longer shows, as an install by hmod could be. */
-  const recorded = (files: Record<string, string>) => {
+  /** Installed at a commit in the repo's history that the folder's own history doesn't show. */
+  const recorded = (files: Record<string, string>, commit: string) => {
     const dir = h.mod("quota", files);
-    const record = { repo: "a/herdr-quota", path: "mods/quota", branch: null, commit: sha("lost"), files: hashTree(dir) };
+    const record = { repo: "a/herdr-quota", ...repoIds("a/herdr-quota"), path: "mods/quota", branch: null, commit, files: hashTree(dir) };
     mkdirSync(h.hmod, { recursive: true });
     writeFileSync(join(h.hmod, "sources.json"), JSON.stringify({ quota: record }));
   };
@@ -274,7 +275,7 @@ describe("linked mods", () => {
   });
 
   test("a baseline older than the walk: behind is a floor", async () => {
-    recorded({ "main.js": "ancient" });
+    recorded({ "main.js": "ancient" }, sha(`c${MAX_COMMITS + 4}`));
     const commits = Array.from({ length: MAX_COMMITS + 5 }, (_, i) => ({
       sha: sha(`c${i}`),
       files: inRepo("quota", { "main.js": `v${i}` }),
@@ -286,9 +287,11 @@ describe("linked mods", () => {
     });
   });
 
-  test("a baseline not in history at all, on a short one: update, but behind is unknown", async () => {
-    recorded({ "main.js": "not from here" });
-    expect(entry(await check(fake()), "quota")).toMatchObject({
+  test("a baseline from a commit that didn't touch the folder, equal to no version: update, but behind is unknown", async () => {
+    recorded({ "main.js": "not from here" }, sha("elsewhere"));
+    const elsewhere = { sha: sha("elsewhere"), files: { ...history[2]!.files, "README.md": "only this changed" } };
+    const commits = [history[0]!, history[1]!, elsewhere, history[2]!];
+    expect(entry(await check(new FakeGitHub({ "a/herdr-quota": { commits } })), "quota")).toMatchObject({
       status: "update_available",
       commits_behind: null,
       commits_behind_capped: false,
@@ -418,7 +421,7 @@ describe("requests", () => {
     fake.requests.length = 0;
     await check(fake);
     expect(fake.requests.length).toBeGreaterThan(0);
-    expect(fake.requests.every((r) => r.url.pathname.endsWith("/commits"))).toBe(true);
+    expect(fake.requests.every((r) => /\/commits$|\/compare\/|^\/repos\/[^/]+\/[^/]+$/.test(r.url.pathname))).toBe(true);
     expect(fake.notModified).toBe(fake.requests.length);
   });
 

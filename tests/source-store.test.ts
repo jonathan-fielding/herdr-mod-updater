@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { gitBlobSha, hashTree } from "../src/fsutil.ts";
 import type { LinkLogEntry, LinkResult, Sources, UnlinkResult } from "../src/model.ts";
-import { errorOf, fixtureHome, type Homes } from "./helpers.ts";
+import { errorOf, fixtureHome, OFFLINE_API, OFFLINE_CLI, type Homes } from "./helpers.ts";
+import { repoIds } from "./repo-ids.ts";
 
 let h: Homes;
 beforeEach(() => {
@@ -19,7 +20,7 @@ const linkLog = (): LinkLogEntry[] =>
 /** Linked, with the baseline a check would have worked out. */
 function resolved(mod: string, dir: string): void {
   mkdirSync(h.hmod, { recursive: true });
-  const record = { repo: "someone/herdr-quota", path: `mods/${mod}`, branch: null, commit: "abc", files: hashTree(dir) };
+  const record = { repo: "someone/herdr-quota", ...repoIds("someone/herdr-quota"), path: `mods/${mod}`, branch: null, commit: "abc", files: hashTree(dir) };
   writeFileSync(join(h.hmod, "sources.json"), JSON.stringify({ [mod]: record }));
 }
 
@@ -140,10 +141,9 @@ describe("sources.json", () => {
   test("parallel links all survive, leaving no lock or temp file", async () => {
     const names = Array.from({ length: 8 }, (_, i) => `m${i}`);
     for (const n of names) h.mod(n, { "main.js": n });
-    const cli = resolve(import.meta.dir, "..", "src", "cli.ts");
     const procs = names.map((n) =>
-      Bun.spawn(["bun", cli, "link", n, `someone/${n}`], {
-        env: { ...process.env, HERDR_APP_HOME: h.herdr, HMOD_HOME: h.hmod },
+      Bun.spawn([...OFFLINE_CLI, "link", n, `someone/${n}`], {
+        env: { ...process.env, HERDR_APP_HOME: h.herdr, HMOD_HOME: h.hmod, HMOD_GITHUB_API: OFFLINE_API },
         stdout: "ignore",
       }),
     );

@@ -53,7 +53,7 @@ async function runAll(f: FakeGitHub): Promise<UpdateEvent[]> {
 }
 
 describe("hmod link", () => {
-  test("stays offline, takes nothing from disk, and says the first check works it out", () => {
+  test("takes nothing from disk, and says the first check works it out", () => {
     h.mod("quota", edited);
     const r = h.run("link", "quota", "o/r");
     expect(r.code).toBe(0);

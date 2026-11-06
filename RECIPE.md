@@ -52,6 +52,7 @@ In the list, top to bottom:
   |---|---|---|---|
   | `Update available` | `accent` | `1.2.0 → 1.3.0 · 2 commits behind` | primary `Update` |
   | `Edited locally` | `blocked` | up to 3 changed files, then the versions, `An update exists` or `No update to install` | `Update`; none if nothing newer is known |
+  | `Source changed` | `blocked` | what changed, from the mod's `note`, in full | `Confirm again` and `Unlink`, neither primary, on any row state that has buttons |
   | `Source found` | `muted` | `owner/repo: confirm it before updating`, when exactly one offer is exact | `Confirm source` |
   | `No source known` | `muted` | `N possible sources found`, or `Where this mod came from isn't known` | `Link source` |
   | `Error` | `blocked` | the message | `Retry`, which runs a check |
@@ -60,7 +61,7 @@ In the list, top to bottom:
   | `Updated` | `done` | `Now at 1.3.0` | none |
   | `Already up to date` | `done` | the versions | none |
   | `Failed` | `blocked` | the error | `Retry` |
-  | `Skipped` | `muted` | the reason | as for the mod's status |
+  | `Skipped` | `muted` | the reason | as for the mod's status. A `source_changed` mod keeps the word `Source changed` |
 
   `Version 1.2.0` replaces the arrow when no newer version is named, and `+` follows a commit count
   that's only a floor.
@@ -85,14 +86,14 @@ aligned, with any error above them in `blocked`.
 ## How it behaves
 
 It shows no agent statuses. Its statuses are the mods': `herdr`, `up_to_date`, `update_available`,
-`modified`, `unlinked` and `error`, as the rows above show them. An installed `mod-updater` is
+`modified`, `source_changed`, `unlinked` and `error`, as the rows above show them. An installed `mod-updater` is
 treated like hcoord: Up to date, or Update available when its clone's origin is ahead. A plain copy
 that isn't set up is `unlinked` and is never shown.
 
 - **Opening** reads `hmod check --cached --json`, which needs no network, so the list appears at once.
   If a job is running, the dialog picks it up. If not, and the last check was more than 6 hours ago or
   never, it starts a check by itself.
-- **Which rows show**: `update_available`, `modified`, `error`, `unlinked` unless it's the person's
+- **Which rows show**: `update_available`, `modified`, `source_changed`, `error`, `unlinked` unless it's the person's
   clone or `mod-updater`, and any mod the current job has a state for. The rest fold away.
 - **Check for updates** starts a job. The status reads `Checking…`, then `Checked just now`, and the
   rows change. A finished check that found new links shows them as ordinary rows.
@@ -103,7 +104,10 @@ that isn't set up is `unlinked` and is never shown.
   closes it and nothing changes.
 - **Update all** starts a job that checks first (`Checking before updating…`), then rows go to
   `Waiting` or `Skipped` and are updated in turn by name. A failure doesn't stop the rest. Modified,
-  unlinked and error mods are skipped.
+  unlinked, error and `source_changed` mods are skipped.
+- **Confirm again and Unlink** run `hmod confirm <mod> --dialog --json` or `hmod unlink <mod> --dialog
+  --json`, then start a check. A refusal shows in the row, which keeps both buttons. Nothing confirms
+  except that button or the command.
 - **Link source** opens that row's link panel, and clicking again closes it. `Link` on a possible
   source links it. Typing `owner/repo`, `owner/repo/mods/name` or a GitHub URL of either, then Enter
   or `Link`, links that. A bad entry says `Type the repo as owner/repo.`, and a refusal from the CLI
@@ -139,8 +143,8 @@ that isn't set up is `unlinked` and is never shown.
 - It's built on no layout and uses no shipped mods or art. It adds no block to a layout.
 - `shared` keys: `mod-updater.job` (the newest job's id) and `mod-updater.seen` (the newest one
   finished showing). A job is running while they differ.
-- **Short commands** go through `exec`: `hmod check --cached --json` and `hmod link <mod> <repo>
-  [--path p] --json`.
+- **Short commands** go through `exec`: `hmod check --cached --json`, `hmod link <mod> <repo>
+  [--path p] --dialog --json`, `hmod confirm <mod> --dialog --json` and `hmod unlink <mod> --dialog --json`.
 - **Long commands** are jobs, because `exec` stops a program after 30 seconds and returns output only
   at the end. `exec("/bin/sh", ["-c", START, RUNNER, log, header, ...HMOD, ...args])` empties
   `<HMOD_DATA>/mod-job.log`, then starts a `nohup` shell writing to it and returns. The log's first
@@ -149,7 +153,7 @@ that isn't set up is `unlinked` and is never shown.
   rows out from the start each time. Every 10th read, `kill -0 <pid>` looks for the process. The jobs
   are `hmod check --json`, `hmod update --all --json` and `hmod update <mod> [--force] --json`.
 - **The CLI**, `src/`, on Bun with no runtime dependencies: `hmod list`, `check [--cached]`, `link`,
-  `unlink`, `update <mod> [--force]`, `update --all` and `mod install`, each with `--json`.
+  `unlink`, `confirm`, `update <mod> [--force]`, `update --all` and `mod install`, each with `--json`.
   - Comparing files: git blob SHAs of everything except dotfiles, `gpui-kit.d.ts` and `jsconfig.json`.
   - Inventory: folders in `<herdr home>/mods`. Keys of `installed.json` without a `:` are `herdr`. A
     `.hcoord-installed` file marks hcoord, and `.hmod-installed` this mod. `cloned_from` in `mod.json` marks a `mod.clone` copy.
@@ -157,7 +161,19 @@ that isn't set up is `unlinked` and is never shown.
     best name first. For each, the folder under `mods/` that fits, a `HEAD` on the blobs to skip repos
     with no matching file, then the 30 newest commits to that folder. One repo with every file equal
     links. Otherwise up to 5 suggestions.
-  - Updating: refuse symlinks, submodules and unsafe paths, stage and hash the files, `herdr-app
+  - Pinning a source: `hmod link` stores `repo_id` and `owner_id` from `GET /repos/owner/repo`. Every
+    check and update asks that again, uncached by the run, and compares the ids in the reply: GitHub
+    redirects a renamed repo, so the reply can name another repo than the one asked for. Same ids and
+    a new name is a rename: store the name, add a note, carry on. Then the compare API from the baseline
+    to the head must say `ahead` or `identical`. If it says `behind`, the same comparison against the
+    branch's tip must, because a baseline can be a commit that didn't touch the folder. Anything else,
+    or a 404, is `source_changed` with `source_changed.what` of `owner`, `repo_id` or `history`. A
+    record with no ids is `source_changed` with `unconfirmed`, with no network call, and `hmod list` shows it too.
+    A failed request is an ordinary `error`, or `failed` from an update, never `source_changed`.
+  - Confirming: `hmod confirm` re-pins the ids and keeps the baseline if the history still leads from
+    it. If not, the baseline is worked out again as for a new link. It writes only when every request
+    worked.
+  - Updating: re-check the pins whatever the last check said, even with `--force`, then refuse symlinks, submodules and unsafe paths, stage and hash the files, `herdr-app
     check`, back up, write each file through a temp file and rename with `main.js` last, verify,
     `herdr-app check` again, record the baseline, or restore from the backup. Keeps 3 backups per mod.
 
@@ -186,11 +202,13 @@ that isn't set up is `unlinked` and is never shown.
   the clone and runs `hmod mod install`. That install ignores a shell's `HMOD_HOME`, so only the
   generated argv decides the data folder.
 - **Never take a link's baseline from disk**: it could be edits, and an update would then replace them
-  unasked. `hmod link` stays offline and records no baseline. The first check compares the local files
+  unasked. `hmod link` asks only for the repo's ids and records no baseline. The first check compares the local files
   with the folder's last 30 commits. A match is the baseline. Otherwise the mod is `modified` against
   HEAD with `update_available` true, marked `baseline_assumed` so a forced update still installs when
   HEAD equals that baseline. An update does this first if no check has, and refuses if it can't.
   A failed check is `error`, never clean.
+- **Never pin ids without the person.** A check that filled in missing ids would trust whoever holds the
+  name that day. Only `hmod link` and `hmod confirm` write them. Linking an already linked mod again doesn't.
 - **`--json` shapes are a contract** between the CLI and the mod: add fields, don't rename them.
 - **Empty the log before starting a job**, in the shell that returns first. Otherwise a poll can read
   the last job's lines as this job's. The id in the header is what tells them apart.
@@ -230,6 +248,13 @@ that isn't set up is `unlinked` and is never shown.
 - A new version that fails after installing is rolled back: the old files are back.
 - Update all updates each mod in turn. With one failing, the others still update and the card counts both.
 - Closing the dialog mid-update and reopening it shows the same job going, and it finishes.
+- With a linked repo moved to another owner, recreated, or force-pushed so the installed commit is gone, the
+  row says `Source changed` and what changed, has `Confirm again` and `Unlink` and no `Update`, and Update
+  all skips it. `hmod update <mod> --force` refuses it too.
+- A link in `sources.json` with no `repo_id` shows `Source changed`, saying it needs confirming once.
+  `Confirm again` makes it an ordinary link.
+- A renamed repo keeps updating, and the row notes the new name.
+- With GitHub unreachable, a linked mod shows `Error`, not `Source changed`.
 - `hmod link mod-updater owner/repo` on an installed copy is refused and records nothing.
 - With hcoord installed from a clone, Update runs `git pull --ff-only` and `hcoord mod install`, and a clone
   with uncommitted changes is refused with nothing changed.

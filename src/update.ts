@@ -19,14 +19,14 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { run, updateClone, UpdateRefused } from "./adapters.ts";
-import { checkMods, resolveBaseline } from "./check.ts";
+import { checkMods, forgetCheck, repin, saveHold, verifySource } from "./check.ts";
 import { HmodError } from "./errors.ts";
 import { diffTrees, hashTree, isIgnored, withLock } from "./fsutil.ts";
 import { createGitHub, GitHubError, type GitHub, type TreeEntry } from "./github.ts";
 import { linkRefusal, localStatus, scanMods, type InventoryItem } from "./inventory.ts";
-import type { ModEntry, ModStatus, SourceRecord } from "./model.ts";
+import type { ConfirmResult, LinkLogEntry, ModEntry, ModStatus, SourceRecord } from "./model.ts";
 import { hmodHome } from "./paths.ts";
-import { loadSources, updateSources } from "./store.ts";
+import { loadSources, logLink, sourceRef, updateSources } from "./store.ts";
 
 /** Answers whether Herdr can load the mod in `dir`. `output` says why not. */
 export type ModCheck = (dir: string) => Promise<{ ok: boolean; output: string }>;
@@ -366,6 +366,7 @@ async function updateLinked(
   item: InventoryItem,
   entry: ModEntry,
   record: SourceRecord,
+  head: string,
   gh: GitHub,
   check: ModCheck,
   step: Step,
@@ -377,8 +378,6 @@ async function updateLinked(
 
   step("downloading");
   const gone = () => new GitHubError(`${path} isn't in ${repo}${branch ? ` on ${branch}` : ""} any more`);
-  const head = (await gh.folderCommits(repo, path, branch))?.[0]?.sha;
-  if (!head) throw gone();
   const entries = await gh.folderEntries(repo, path, head);
   if (!entries) throw gone();
   const incoming = installable(entries);
@@ -485,19 +484,29 @@ async function updateItem(item: InventoryItem, force: boolean, gh: GitHub, check
   const failure = (outcome: UpdateOutcome, error: string): UpdateResult => ({ ...blank(item.name), ok: false, outcome, error });
   try {
     let sources = loadSources();
-    if (sources[item.name]?.commit === null && !linkRefusal(item) && !item.problem) {
-      try {
-        await resolveBaseline(gh, item.name, item.dir, sources[item.name]!);
-      } catch (e: any) {
+    const record = sources[item.name];
+    let head: string | null = null;
+    let renamed: string[] = [];
+    if (record && !linkRefusal(item) && !item.problem) {
+      // Always asked, and before anything else: --force is about local edits, not about this.
+      const verified = await verifySource(gh, item.name, item.dir, record).catch((e) => {
+        if (record.commit !== null) throw e;
         throw new UpdateRefused(`can't tell which version of ${item.name} is installed, so nothing changed: ${e?.message ?? e}`);
+      });
+      if (verified.change) {
+        saveHold(item.name, verified.record, verified.change);
+        return failure("refused", `${item.name}'s source changed, so nothing was installed. ${verified.change.detail} To go on, use Confirm again in Mod updates or \`hmod confirm ${item.name}\`.`);
       }
+      head = verified.head;
+      if (verified.renamed_from) renamed = [`Renamed on GitHub: ${verified.renamed_from} is ${verified.record.repo} now.`];
       sources = loadSources();
     }
     const entry = localStatus(item, sources);
     const refused = refusal(item, entry, force);
     if (refused) return failure("refused", refused);
     if (item.adapter) return await updateAdapted(item, entry, step);
-    return await updateLinked(item, entry, sources[item.name]!, gh, check, step);
+    const done = await updateLinked(item, entry, sources[item.name]!, head!, gh, check, step);
+    return { ...done, notes: [...renamed, ...done.notes] };
   } catch (e: any) {
     return failure(e instanceof UpdateRefused ? "refused" : "failed", e?.message ?? String(e));
   } finally {
@@ -533,8 +542,37 @@ export function updateOne(name: string, force: boolean, deps: UpdateDeps = {}): 
   });
 }
 
+/**
+ * What only the person can do for a held mod: trust the repo as it is now. Nothing is written until
+ * every answer is in, so a failure leaves the hold in place.
+ */
+export function confirmOne(name: string, via: LinkLogEntry["via"], deps: Pick<UpdateDeps, "gh"> = {}): Promise<ConfirmResult> {
+  return exclusively(async () => {
+    const item = scanMods().find((m) => m.name === name);
+    if (!item) throw new HmodError(`no mod called ${name} in the mods folder`);
+    const refused = linkRefusal(item);
+    if (refused) throw new HmodError(`can't confirm: ${refused}`);
+    const record = loadSources()[name];
+    if (!record) throw new HmodError(`${name} isn't linked`);
+    const pinned = await repin(deps.gh ?? createGitHub(), item.dir, record);
+    const result = await updateSources((sources): ConfirmResult => {
+      const latest = sources[name];
+      if (latest?.repo !== record.repo || latest.path !== record.path || latest.branch !== record.branch || latest.commit !== record.commit) {
+        throw new HmodError(`${name}'s link changed while confirming: try again`);
+      }
+      const { repo, path, branch, repo_id, owner_id } = pinned;
+      logLink({ event: "confirm", mod: name, repo, path, branch, via, offered_because: null, repo_id, owner_id });
+      sources[name] = pinned;
+      return { ok: true, mod: name, source: sourceRef(pinned), repo_id: repo_id!, owner_id: owner_id!, counts_as_edited: pinned.baseline_assumed === true };
+    });
+    forgetCheck(name);
+    return result;
+  });
+}
+
 const SKIP_REASON: Partial<Record<ModStatus, string>> = {
   modified: "has local edits",
+  source_changed: "its source changed",
   unlinked: "no source known",
   error: "its status couldn't be worked out",
 };
