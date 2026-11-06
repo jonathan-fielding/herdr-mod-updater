@@ -112,6 +112,8 @@ that isn't set up is `unlinked` and is never shown.
   A job whose process dies shows `hmod stopped before it finished`, and any row it hadn't reached is
   `Failed`. If a job's log doesn't show that job within 10 seconds, the error line says `hmod didn't start.`
 
+**The status bar button.** With `{"bar": true}` in a layout block's props, the mod draws one clickable line instead of the dialog: `Mod updates`, or `Mod updates (N)` in `foreground` when N mods have an update, on `chrome` with a top border, 11.8px. A click runs `mod.open`. It rereads `hmod check --cached --json` once a minute and never starts a check.
+
 ## Built from
 
 - `mods/mod-updater/main.js`: one default-export `View`, class `ModUpdates`. It imports `View`, `div`
