@@ -51,7 +51,7 @@ describe("finding a source by content", () => {
     expect(m).toMatchObject({ status: "unlinked", source: null, update_available: false });
     expect(m.suggestions).toHaveLength(1);
     expect(m.suggestions[0]).toMatchObject({ repo: "a/herdr-quota", path: "mods/quota", exact: true, commit: sha("three") });
-    expect(m.suggestions[0]!.why).toBe(`Every file matches commit ${sha("three").slice(0, 7)}`);
+    expect(m.suggestions[0]!.why).toStartWith(`Every file matches commit ${sha("three").slice(0, 7)}`);
     expect(hasSources()).toBe(false);
   });
 
@@ -191,12 +191,9 @@ describe("finding a source by content", () => {
     expect(entry(await check(fake), "renamed").suggestions[0]?.repo).toBe("a/herdr-quota");
   });
 
-  test("a failing candidate fails the mod rather than linking without seeing every repo", async () => {
+  test("when every candidate fails nothing was read, so that's an error and not an empty list", async () => {
     h.mod("quota", v3);
-    const fake = new FakeGitHub({
-      "a/herdr-quota": { commits: history },
-      "bad/herdr-quota": { commits: history },
-    });
+    const fake = new FakeGitHub({ "bad/herdr-quota": { commits: history } });
     fake.failing = { pattern: /^\/repos\/bad\//, status: 500 };
     const m = entry(await check(fake), "quota");
     expect(m).toMatchObject({ status: "error", source: null });

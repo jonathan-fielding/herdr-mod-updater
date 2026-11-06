@@ -14,13 +14,19 @@ function isRecord(v: unknown): v is SourceRecord {
     (r.commit === null || typeof r.commit === "string") &&
     typeof r.files === "object" && r.files !== null &&
     (r.repo_id === undefined || typeof r.repo_id === "number") &&
-    (r.owner_id === undefined || typeof r.owner_id === "number")
+    (r.owner_id === undefined || typeof r.owner_id === "number") &&
+    (r.first_update_pending === undefined || typeof r.first_update_pending === "boolean")
   );
 }
 
 /** Whether the person has confirmed this link's ids. */
 export function isPinned(r: SourceRecord): boolean {
   return r.repo_id !== undefined && r.owner_id !== undefined;
+}
+
+/** What linking or confirming a repo hands over, for anyone who reads it before or after. */
+export function trustWarning(repo: string, owner = repo.split("/")[0]): string {
+  return `${owner}, and anyone who later controls ${repo}, can run code on your computer.`;
 }
 
 /** No prototype, so a mod called "constructor" or "__proto__" is an ordinary key. */

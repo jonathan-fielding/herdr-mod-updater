@@ -36,6 +36,30 @@ export interface SourceChange {
   what: SourceChangeKind[];
   /** Already worded. */
   detail: string;
+  /** "owner/repo" as GitHub has it now, when that's who changed: whoever confirming would trust. */
+  repo_now?: string;
+}
+
+/** Why a list of possible sources may not hold every repo that has the mod. */
+export type OfferGapKind =
+  /** Without a token repos are found by name, so one with another name is never looked at. */
+  | "name_search"
+  /** GitHub had more results than it would give. */
+  | "search_limit"
+  /** More repos could hold the mod than hmod reads per mod. */
+  | "repo_cap"
+  /** More repos matched than are offered. Every one was read: this is about what's shown. */
+  | "offer_cap"
+  | "rate_limit"
+  /** A repo couldn't be read, so it was skipped. */
+  | "repo_failed"
+  /** Saved by a version of hmod that didn't record any of this. */
+  | "old_check";
+
+export interface OfferGap {
+  kind: OfferGapKind;
+  /** Already worded. */
+  detail: string;
 }
 
 /** What mod.clone writes into the clone's mod.json. */
@@ -76,6 +100,12 @@ export interface SourceRecord extends SourceRef {
    * in for a version nobody knows. HEAD can then equal the baseline and still be worth installing.
    */
   baseline_assumed?: boolean;
+  /**
+   * Set by every link and confirm, and cleared by the first update that installs something. Until
+   * then only an update of this mod by name goes ahead: the first code from a repo the person has
+   * just trusted never arrives as part of Update all.
+   */
+  first_update_pending?: boolean;
 }
 
 export type Sources = Record<string, SourceRecord>;
@@ -126,6 +156,8 @@ export interface LinkResult {
   source: SourceRef;
   /** False when the mod was already linked to exactly this. */
   linked: boolean;
+  /** What's now being trusted, already worded. */
+  trust: string;
 }
 
 /** `hmod confirm --json` */
@@ -137,6 +169,8 @@ export interface ConfirmResult {
   owner_id: number;
   /** The installed files match no version in the repo now, so they count as edited. */
   counts_as_edited: boolean;
+  /** What's now being trusted, already worded. */
+  trust: string;
 }
 
 /** A line of links.jsonl. */

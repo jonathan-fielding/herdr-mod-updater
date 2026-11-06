@@ -482,7 +482,9 @@ describe("the CLI", () => {
     expect(checked.stdout).toContain("needs confirming once");
     expect(h.run("list").stdout).toContain("source_changed");
     const r = await runCli(h, fake(), "confirm", "quota");
-    expect(r.stdout).toBe(`confirmed: quota -> o/r (repo id ${repoIds("o/r").repo_id}, owner id ${repoIds("o/r").owner_id})\n`);
+    expect(r.stdout).toContain(`confirmed: quota -> o/r (repo id ${repoIds("o/r").repo_id}, owner id ${repoIds("o/r").owner_id})\n`);
+    expect(r.stdout).toContain("o, and anyone who later controls o/r, can run code on your computer.");
+    expect(r.stdout).toContain("hmod update quota");
     expect(JSON.parse((await runCli(h, fake(), "check", "--json")).stdout).mods[0].status).toBe("update_available");
   });
 

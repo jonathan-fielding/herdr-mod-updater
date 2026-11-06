@@ -5,7 +5,7 @@ import { diffTrees, hashTree, atomicWrite } from "./fsutil.ts";
 import { createGitHub, GitHubError, MAX_COMMITS, type CommitRef, type GitHub, type RepoIdentity } from "./github.ts";
 import { listMods, localStatus, scanMods, type InventoryItem } from "./inventory.ts";
 import { findSource, findVersion, type Suggestion } from "./match.ts";
-import type { ListResult, ModEntry, SourceChange, SourceChangeKind, SourceRecord, SourceRef, Sources } from "./model.ts";
+import type { ListResult, ModEntry, OfferGap, SourceChange, SourceChangeKind, SourceRecord, SourceRef, Sources } from "./model.ts";
 import { herdrHome, hmodHome } from "./paths.ts";
 import { isPinned, loadSources, logLink, updateSources } from "./store.ts";
 
@@ -55,6 +55,8 @@ interface Saved {
   upstream: Upstream | null;
   clone: CloneState | null;
   suggestions: Suggestion[];
+  /** Why `suggestions` may not be every repo. Missing: saved by a version that didn't look. */
+  offer_gaps?: OfferGap[];
   hold?: Hold | null;
   /** This check followed a rename from this name. */
   renamed_from?: string | null;
@@ -76,8 +78,12 @@ export interface CheckEntry extends ModEntry {
   latest_version: string | null;
   /** The newest upstream commit touching the mod. */
   latest_commit: string | null;
-  /** Possible sources for an unlinked mod: either several exact copies, or partial matches. */
+  /** Possible sources for an unlinked mod, never more than that, forks last. */
   suggestions: Suggestion[];
+  /** Why `suggestions` may not be every repo holding the mod. Empty: every candidate was seen. */
+  offer_gaps: OfferGap[];
+  /** Linked or confirmed, with nothing installed from it yet: Update all leaves it out. */
+  first_update_pending: boolean;
   /** When this mod's result came from GitHub or origin; null if it never has. */
   checked_at: string | null;
   /** clone-installed only. */
@@ -211,7 +217,7 @@ function identityChange(record: SourceRecord, now: RepoIdentity): SourceChange |
   const detail = what.includes("repo_id")
     ? `${record.repo} is a different repo now, owned by ${now.owner}: the name may have been registered again.`
     : `${record.repo} has a new owner: it's ${now.repo} now, owned by ${now.owner}.`;
-  return { what, detail };
+  return { what, detail, repo_now: now.repo };
 }
 
 /** Whether `head` builds on the baseline. Anything else means the history isn't the one the person trusted. */
@@ -335,8 +341,8 @@ async function inspect(gh: GitHub, item: InventoryItem, sources: Sources, now: s
     if (change) return { ...base, renamed_from, hold: holdOn(known, change) };
     return { ...base, renamed_from, upstream: await inspectLinked(gh, known) };
   }
-  const files = hashTree(item.dir);
-  return { ...base, suggestions: await findSource(gh, { name: item.name, title: item.title, files }) };
+  const { suggestions, gaps } = await findSource(gh, { name: item.name, title: item.title, files: hashTree(item.dir) });
+  return { ...base, suggestions, offer_gaps: gaps };
 }
 
 function holdOn({ commit, repo_id, owner_id }: SourceRecord, change: SourceChange): Hold {
@@ -348,7 +354,7 @@ function heldBy(record: SourceRecord, saved: Saved | undefined): SourceChange | 
   if (!isPinned(record)) return unconfirmed(record);
   const hold = saved?.hold;
   if (!hold || hold.commit !== record.commit || hold.repo_id !== record.repo_id || hold.owner_id !== record.owner_id) return null;
-  return { what: hold.what, detail: hold.detail };
+  return { what: hold.what, detail: hold.detail, repo_now: hold.repo_now };
 }
 
 function held<T extends ModEntry>(entry: T, change: SourceChange): T {
@@ -398,6 +404,16 @@ function localVersion(dir: string): string | null {
     return null;
   }
 }
+
+/** Offers saved before hmod said what it hadn't seen can't claim to be everything. */
+const OLD_CHECK: OfferGap = { kind: "old_check", detail: "An older hmod made this list and didn't record what it left out. Check for updates to find out." };
+
+/** Why Update all leaves a mod out. */
+export function firstUpdateNote(repo: string): string {
+  return `First update from ${repo}: update this mod by itself to go ahead. Update all leaves it out until then`;
+}
+
+const withNote = (note: string | null, more: string) => (note ? `${note}. ${more}` : more);
 
 function withLinked(entry: CheckEntry, record: SourceRecord, up: Upstream): CheckEntry {
   const same = up.repo === record.repo && up.path === record.path && up.branch === record.branch;
@@ -450,6 +466,8 @@ function present(item: InventoryItem, sources: Sources, saved: Saved | undefined
     latest_version: null,
     latest_commit: null,
     suggestions: [],
+    offer_gaps: [],
+    first_update_pending: local.source !== null && sources[item.name]?.first_update_pending === true,
     checked_at: saved?.checked_at ?? null,
     clone: null,
   };
@@ -465,17 +483,20 @@ function present(item: InventoryItem, sources: Sources, saved: Saved | undefined
   if (saved.clone && item.adapter) entry = withClone(entry, saved.clone, item.adapter.update);
   else if (saved.upstream && record && !unknown) entry = withLinked(entry, record, saved.upstream);
   else if (!record && !item.adapter) {
-    entry = { ...entry, remote_checked: !saved.error, suggestions: saved.suggestions };
+    const gaps = saved.offer_gaps ?? (saved.suggestions.length ? [OLD_CHECK] : []);
+    entry = { ...entry, remote_checked: !saved.error, suggestions: saved.suggestions, offer_gaps: gaps };
   }
   if (saved.renamed_from && record) {
-    const renamed = `Renamed on GitHub: ${saved.renamed_from} is ${record.repo} now`;
-    entry = { ...entry, note: entry.note ? `${entry.note}. ${renamed}` : renamed };
+    entry = { ...entry, note: withNote(entry.note, `Renamed on GitHub: ${saved.renamed_from} is ${record.repo} now`) };
+  }
+  if (record && entry.first_update_pending && entry.status === "update_available") {
+    entry = { ...entry, note: withNote(entry.note, firstUpdateNote(record.repo)) };
   }
 
   if (!saved.error) return entry;
   const answered = !unknown && (saved.upstream || saved.clone);
   return answered
-    ? { ...entry, note: `Last check failed: ${saved.error}` }
+    ? { ...entry, note: withNote(entry.first_update_pending ? entry.note : null, `Last check failed: ${saved.error}`) }
     : { ...entry, status: "error", message: saved.error, remote_checked: false };
 }
 
