@@ -34,7 +34,7 @@ Your mods folder                     hmod                             GitHub
 
 ## What it looks like in Herdr
 
-![Mod updates, with nothing waiting](preview.png)
+![Mod updates, with one update waiting](preview.png)
 
 With two mods waiting and three settled, the dialog reads:
 
