@@ -157,11 +157,11 @@ describe("updating after a manual link", () => {
     expect(local()).toBe(edited["main.js"]);
   });
 
-  test("--all still updates an unedited old version", async () => {
+  test("--all leaves out an unedited old version until it's been updated once by name", async () => {
     linked(v1);
     const events = await runAll(fake());
-    expect(events.at(-1)).toMatchObject({ event: "done", ok: true, updated: ["quota"] });
-    expect(local()).toBe("two");
+    expect(events[0]).toMatchObject({ event: "plan", mods: [], skipped: [{ mod: "quota", status: "update_available" }] });
+    expect(local()).toBe("one");
   });
 
   test("--all skips a mod whose baseline can't be resolved", async () => {

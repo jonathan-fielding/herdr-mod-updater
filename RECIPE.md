@@ -50,11 +50,11 @@ In the list, top to bottom:
 
   | Status word | Color | Detail line | Button |
   |---|---|---|---|
-  | `Update available` | `accent` | `1.2.0 → 1.3.0 · 2 commits behind` | primary `Update` |
+  | `Update available` | `accent` | `1.2.0 → 1.3.0 · 2 commits behind`; on a first update, then the mod's `note`, which says Update all leaves it out | primary `Update` |
   | `Edited locally` | `blocked` | up to 3 changed files, then the versions, `An update exists` or `No update to install` | `Update`; none if nothing newer is known |
   | `Source changed` | `blocked` | what changed, from the mod's `note`, in full | `Confirm again` and `Unlink`, neither primary, on any row state that has buttons |
-  | `Source found` | `muted` | `owner/repo: confirm it before updating`, when exactly one offer is exact | `Confirm source` |
-  | `No source known` | `muted` | `N possible sources found`, or `Where this mod came from isn't known` | `Link source` |
+  | `Possible source` | `muted` | with one offer `owner/repo: not proven to be its source`, with more `N possible sources`; then ` · this list may be incomplete` if it may be | `Link source`, never primary |
+  | `No source known` | `muted` | `Where this mod came from isn't known`, adding `, and the search may have missed it` if the list may be incomplete | `Link source` |
   | `Error` | `blocked` | the message | `Retry`, which runs a check |
   | `Waiting` | `dim` | the versions | none |
   | `Updating`, `Updating: downloading` (also checking, backing up, installing, verifying, pulling) | `working` | the versions | none |
@@ -66,10 +66,13 @@ In the list, top to bottom:
   `Version 1.2.0` replaces the arrow when no newer version is named, and `+` follows a commit count
   that's only a floor.
 - **Link panel**, inside a row whose Link source is open. 8px above, 8px gap, 12px type. When there are
-  offers it starts, in `muted`: `Matching files don't prove who made a mod: anyone can publish a copy.
-  Link only a repo you recognise.` One line for
-  each possible source: `owner/repo · path` in `foreground`, truncated, the reason why under it at
-  11px `dim`, and a `Link` button. Then an input 28px tall, radius 6, `background` fill, `input`
+  offers it starts, in `muted`: `Matching files don't prove who made a mod: anyone can publish a copy,
+  and stars, age and owner can be faked too. Link only a repo you recognise.` If the check recorded any
+  gaps, `This list may be incomplete.` follows in `muted`, with each gap's words at 11px. Then a block for
+  each possible source, forks last: `owner/repo · path` in `foreground`, truncated; under it at 11px
+  `dim` the reason why, then the offer's two evidence lines, wrapping (the second in `blocked` if the
+  folder has moved on from the match); and a `Link` button that's never primary.
+  `Link` here or by the input opens the **trust panel** below it and links nothing yet. Then an input 28px tall, radius 6, `background` fill, `input`
   border, placeholder `owner/repo`, with a `Link` button. A link error under it in `blocked`.
 - **Folded sections**, in this order: `Up to date (N)`, `Updated with Herdr (N)` and `Your clones (N)`,
   each hidden when empty. Heads are 28px tall, 12px `muted`, `foreground` under the pointer, with `▸`
@@ -105,6 +108,11 @@ that isn't set up is `unlinked` and is never shown.
 - **Update all** starts a job that checks first (`Checking before updating…`), then rows go to
   `Waiting` or `Skipped` and are updated in turn by name. A failure doesn't stop the rest. Modified,
   unlinked, error and `source_changed` mods are skipped.
+- **Trust panel**, under a row, for `Link` and `Confirm again`. 8px above, 6px gap, 12px type: `Link
+  <title> to owner/repo?` or `Trust owner/repo as it is now?` in medium `foreground`; `owner, and anyone
+  who later controls owner/repo, can run code on your computer.` in `foreground`, naming the repo as
+  GitHub has it now on a Confirm again; `Update all will leave <title> out until you've updated it by
+  itself once.` in `muted`; then `Cancel` and `Link it` or `Confirm`, right aligned, neither primary.
 - **Confirm again and Unlink** run `hmod confirm <mod> --dialog --json` or `hmod unlink <mod> --dialog
   --json`, then start a check. A refusal shows in the row, which keeps both buttons. Nothing confirms
   except that button or the command.
@@ -159,8 +167,20 @@ that isn't set up is `unlinked` and is never shown.
     `.hcoord-installed` file marks hcoord, and `.hmod-installed` this mod. `cloned_from` in `mod.json` marks a `mod.clone` copy.
   - Finding a source: GitHub search for `<name or title> topic:herdr-mod fork:true`, up to 20 repos,
     best name first. For each, the folder under `mods/` that fits, a `HEAD` on the blobs to skip repos
-    with no matching file, then the 30 newest commits to that folder. One repo with every file equal
-    links. Otherwise up to 5 suggestions.
+    with no matching file, then the 30 newest commits to that folder. It never links. With a token:
+    every topic repo's tree instead of the search, then at most 40 repos read closely per mod, those
+    holding one of its files at HEAD first. Up to 5 suggestions, forks last, then exact, then most files
+    equal. A repo that fails is skipped; only every repo failing is an error for the mod.
+  - An offer's evidence comes from the search results (owner, created date, fork, stars) and the commit
+    walk (`commits_past_match`). Only an offered fork costs a request, `GET /repos/owner/repo`, for its parent.
+  - `offer_gaps` says why a list may not be everything: `name_search` (always, without a token),
+    `search_limit`, `repo_cap`, `offer_cap`, `rate_limit`, `repo_failed`, or `old_check` for a list saved
+    before this existed. `Every file matches` says nothing about other repos unless the only gap, if
+    any, is `offer_cap`: every candidate was read.
+  - First update: `hmod link` and `hmod confirm` set `first_update_pending` on the record, and the first
+    update that installs something clears it. While it's set `update --all` skips the mod, in its plan
+    and again as it reaches each mod, and the mod isn't in Update all's count or the status bar's.
+    `hmod update <mod>` goes ahead.
   - Pinning a source: `hmod link` stores `repo_id` and `owner_id` from `GET /repos/owner/repo`. Every
     check and update asks that again, uncached by the run, and compares the ids in the reply: GitHub
     redirects a renamed repo, so the reply can name another repo than the one asked for. Same ids and
@@ -235,10 +255,15 @@ that isn't set up is `unlinked` and is never shown.
 - `hmod list --json` gives `herdr` for a mod in `installed.json`, whose row is under Updated with Herdr
   and has no button.
 - With a mod whose files equal an old commit in exactly one `herdr-mod` repo, `hmod check` links nothing:
-  the row says `Source found` with the repo, its button is `Confirm source`, and Update all skips it. `Link`
-  in that panel links it, and it then shows `Update available` with versions and commits behind.
+  the row says `Possible source` with the repo, its button is `Link source`, and Update all skips it. `Link`
+  in that panel then `Link it` links it, and it then shows `Update available` with versions and commits
+  behind. It says Update all leaves it out, Update all skips it, and its own `Update` installs it. The
+  next update goes through Update all.
+- The panel shows owner, created date, stars, fork status, and says so if the folder changed since the match.
+- With a repo that fails, or any limit hit, the panel says `This list may be incomplete.` and why, and
+  the other repos are still offered.
 - `links.jsonl` has a line for that link, saying it came from the dialog and why it was offered.
-- With the same files in two repos, it stays `No source known` with two offers. `Link` on one links it.
+- With the same files in two repos, it says `Possible source` with two offers, forks last. `Link` then `Link it` on one links it.
 - A mod with an edit shows `Edited locally`, the changed file, and is skipped by Update all.
 - Update on a mod replaces its files, leaves `gpui-kit.d.ts`, `jsconfig.json` and dotfiles alone, leaves a
   backup, and the row ends `Updated`. `sources.json` holds the new commit.

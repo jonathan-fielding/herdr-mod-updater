@@ -40,9 +40,25 @@ export interface GitHubOptions {
   concurrency?: number;
 }
 
+/** One repo from a search. GitHub sends all of this anyway, so evidence about it costs no request. */
 export interface RepoHit {
   full_name: string;
   name: string;
+  fork?: boolean;
+  created_at?: string;
+  stargazers_count?: number;
+}
+
+/** What a search returned. `partial`: GitHub has more than it gave, so this isn't every repo. */
+export interface RepoSearch {
+  hits: RepoHit[];
+  partial: boolean;
+}
+
+interface SearchBody {
+  items: RepoHit[];
+  total_count?: number;
+  incomplete_results?: boolean;
 }
 
 export interface CommitRef {
@@ -289,24 +305,36 @@ export class GitHub {
     return body.status as Comparison;
   }
 
-  /** Repos with the herdr-mod topic that fit `term`, forks included, best first. */
-  async searchMods(term: string): Promise<RepoHit[]> {
+  /** Repos with the herdr-mod topic that fit `term`, forks included, best first. One page of them. */
+  async searchMods(term: string): Promise<RepoSearch> {
     const q = encodeURIComponent(`${term} topic:herdr-mod fork:true`);
-    const found = await this.get<{ items: RepoHit[] }>(`/search/repositories?q=${q}&per_page=30`);
-    return found?.items ?? [];
+    const found = await this.get<SearchBody>(`/search/repositories?q=${q}&per_page=30`);
+    const hits = found?.items ?? [];
+    return { hits, partial: found?.incomplete_results === true || (found?.total_count ?? 0) > hits.length };
   }
 
-  /** Every repo with the herdr-mod topic, forks included. Up to a day old. */
-  async topicRepos(): Promise<RepoHit[]> {
+  /** Every repo with the herdr-mod topic that GitHub will list, forks included. Up to a day old. */
+  async topicRepos(): Promise<RepoSearch> {
     const q = encodeURIComponent("topic:herdr-mod fork:true");
     const repos = new Map<string, RepoHit>();
-    for (let page = 1; page <= SEARCH_PAGES; page++) {
+    let partial = false;
+    let total = 0;
+    let more = true;
+    for (let page = 1; page <= SEARCH_PAGES && more; page++) {
       const url = `/search/repositories?q=${q}&per_page=${SEARCH_PAGE_SIZE}&page=${page}`;
-      const found = await this.get<{ items: RepoHit[] }>(url, false, SHORTLIST_MAX_AGE_MS);
+      const found = await this.get<SearchBody>(url, false, SHORTLIST_MAX_AGE_MS);
       for (const hit of found?.items ?? []) repos.set(hit.full_name, hit);
-      if ((found?.items.length ?? 0) < SEARCH_PAGE_SIZE) break;
+      partial ||= found?.incomplete_results === true;
+      total = found?.total_count ?? total;
+      more = (found?.items.length ?? 0) >= SEARCH_PAGE_SIZE;
     }
-    return [...repos.values()];
+    return { hits: [...repos.values()], partial: partial || more || total > repos.size };
+  }
+
+  /** The repo a fork was made from, or null if GitHub doesn't say. Search results leave this out. */
+  async forkParent(repo: string): Promise<string | null> {
+    const name = (await this.get<{ parent?: { full_name?: unknown } }>(`/repos/${repo}`))?.parent?.full_name;
+    return typeof name === "string" && FULL_NAME.test(name) ? name : null;
   }
 
   /** The repo's whole tree at its default branch, or null if it's gone or empty. Up to a day old. */

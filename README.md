@@ -12,12 +12,12 @@
 
 Herdr's gallery installs a mod by copying a folder, so a week later nothing says which repo it was or which version you have. Names don't settle it: four different repos are called `herdr-quota`, and an install may be renamed if its name was taken.
 
-So hmod goes by content. It hashes the files in each mod and looks for repos with the `herdr-mod` topic holding those files at some commit, then shows you what it found. You choose, even when only one repo matches: matching files prove someone holds a copy, not who made it, and anyone can publish a copy. Nothing is linked until you say so, and **Update all** leaves a mod alone until then.
+So hmod goes by content. It hashes the files in each mod and looks for repos with the `herdr-mod` topic holding those files at some commit, then shows you what it found as **possible sources**, with what it knows about each repo. Nothing public proves where a mod came from, so you choose, even when only one repo matches: matching files prove someone holds a copy, not who made it, and anyone can publish a copy. Nothing is linked until you say so, and **Update all** leaves a mod alone until then, and for its first update after that.
 
 ```
 Your mods folder                     hmod                             GitHub
  ├─ weather-bar  ─── you linked ───  demo/weather-bar  ──────────────  2 commits newer
- ├─ clipboard    ─── same files ───  in 1 repo: you confirm
+ ├─ clipboard    ─── same files ───  in 1 repo: you decide
  ├─ herdr-quota  ─── same files ───  in 2 repos: you pick
  ├─ my-timer     ─── edited ───────  No source known: link it by hand
  └─ files        ─── ships with Herdr: updates with the app
@@ -49,8 +49,8 @@ Mod updates   Checked 5m ago             [ Check for updates ]
  Clipboard log  Edited locally                     [ Update ]
  main.js · 0.1.0 → 0.2.0 · 1 commit behind
 
- Quota  No source known                       [ Link source ]
- 2 possible sources found
+ Quota  Possible source                       [ Link source ]
+ 2 possible sources
 
  ▸ Up to date (1)
  ▸ Updated with Herdr (1)
@@ -191,7 +191,7 @@ That removes the dialog, hmod's records and backups, and the command. Your other
 | Update available | `update_available` | a newer version exists | **Update** |
 | Edited locally | `modified` | your files differ from what was installed | **Update**, which asks first; none if there's nothing newer |
 | Source changed | `source_changed` | the repo may not be the one you linked: the row says what changed | **Confirm again** and **Unlink** |
-| Source found | `unlinked` | one repo holds every file, which isn't proof it's the source | **Confirm source** |
+| Possible source | `unlinked` | some repos hold this mod's files, which isn't proof any of them is the source | **Link source** |
 | No source known | `unlinked` | hmod can't tell where it came from | **Link source** |
 | Error | `error` | the status couldn't be worked out; the row says why | **Retry** |
 | under Up to date | `up_to_date` | nothing newer | none |
@@ -202,7 +202,13 @@ That removes the dialog, hmod's records and backups, and the command. Your other
 
 **Confirm again** trusts the repo as it is now, so use it only if you recognise it. **Unlink** forgets the source. If the history you installed from is gone, your files can't be matched to it, so after confirming the mod shows **Edited locally** unless they equal a version still there. A plain rename needs nothing from you: hmod follows it and shows a note. A failed check is an error and never says **Source changed**.
 
-**Confirm source** and **Link source** show any possible sources hmod found, each with a **Link** button and how well it matched. Link only a repo you recognise. You can also type `owner/repo`, `owner/repo/mods/name`, or paste a GitHub URL of either. Linking starts a check.
+**Link source** shows any possible sources hmod found, forks last, and none of them is the default choice. Each has a **Link** button, how well it matched, and what GitHub says about it: owner, when the repo was made, stars, whether it's a fork and of what, and whether the mod's folder has changed since the commit that matched. A folder that has changed matters most: an update would install those newer commits, which aren't what matched. All of this can be faked, so it only helps you decide. Link only a repo you recognise. You can also type `owner/repo`, `owner/repo/mods/name`, or paste a GitHub URL of either.
+
+If hmod didn't see every repo, the list says it may be incomplete, and why: no token, too many repos to read, a limit on GitHub's side, or a repo that couldn't be read and was skipped. A repo that fails never stops the others being offered.
+
+**Link** and **Confirm again** ask once more before doing anything, and say what you're agreeing to: this owner, and anyone who later controls this repo, can run code on your computer. Linking then starts a check.
+
+**The first update is yours.** After a link or a **Confirm again**, **Update all** and `hmod update --all` leave the mod out, and the row says why. Click **Update** on that mod, or run `hmod update <mod>`, and after one update that installs something it behaves like any other.
 
 **Your edits stay safe when you link.** Linking asks GitHub who the repo is and takes nothing from your files. The check that follows compares them with the 30 newest versions of the mod's folder. If they equal one, that's your version. If not, the mod shows **Edited locally**, with an update on offer: **Update all** skips it, and **Update** asks first and keeps a backup. A version older than those 30 looks edited too. If the check fails, the mod shows an error, and an update does the same work first and stops if it can't finish it.
 
@@ -217,7 +223,7 @@ That removes the dialog, hmod's records and backups, and the command. Your other
   ```
 
 - **Matching only looks at repos with the `herdr-mod` topic**, at `mods/<name>/` on the default branch, in the 30 newest commits that touched that folder. For anything else, link by hand: `--path` takes any folder, and `--branch` any branch (the dialog's link box always uses the default branch).
-- **Looking through every repo takes a token.** Signed in to `gh`, hmod reads the whole topic, about 500 requests and 40 seconds the first time, then keeps that list for a day. This only happens while a mod is unlinked. Without a token it searches by name instead, up to 20 repos for each mod, so it can miss a source.
+- **Looking through every repo takes a token.** Signed in to `gh`, hmod reads the whole topic, about 500 requests and 40 seconds the first time, then keeps that list for a day. This only happens while a mod is unlinked. Without a token it searches by name instead, up to 20 repos for each mod, so it can miss a source, and the list always says so. With a token it reads up to 40 repos closely for each mod, those holding one of its files first. GitHub's search stops at 1,000 results.
 - **Links made by older versions stay.** Before links needed confirming, a check could link a mod by itself. To review one, run `hmod unlink <mod>` and check again.
 - **`keys.json` is never merged.** hmod tells you when a repo's `keys.json` changed. Add the keys you want yourself.
 - **`RECIPE.md` and `preview.png` aren't installed.** Only the mod's own folder is.
@@ -286,7 +292,7 @@ The dialog drives it, so you rarely need it. `hmod --help` lists everything, and
 | Command | Does |
 |---|---|
 | `hmod list` | every mod and its status, from local files and the last check. With no network, a linked mod's `up_to_date` only means no local edits |
-| `hmod check` | asks GitHub what's new, and offers possible sources for unlinked mods by content. It never links one |
+| `hmod check` | asks GitHub what's new, and offers possible sources for unlinked mods by content, saying when that list may be incomplete. It never links one |
 | `hmod check --cached` | the last answer, with no network call |
 | `hmod link <mod> <owner/repo> [--path mods/x] [--branch b]` | records where a mod came from, and who owns that repo now. `--path` defaults to `mods/<mod>`, `--branch` to the repo's default |
 | `hmod unlink <mod>` | forgets where a mod came from |

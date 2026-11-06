@@ -19,14 +19,14 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { run, updateClone, UpdateRefused } from "./adapters.ts";
-import { checkMods, forgetCheck, repin, saveHold, verifySource } from "./check.ts";
+import { checkMods, firstUpdateNote, forgetCheck, repin, saveHold, verifySource, type CheckEntry } from "./check.ts";
 import { HmodError } from "./errors.ts";
 import { diffTrees, hashTree, isIgnored, withLock } from "./fsutil.ts";
 import { createGitHub, GitHubError, type GitHub, type TreeEntry } from "./github.ts";
 import { linkRefusal, localStatus, scanMods, type InventoryItem } from "./inventory.ts";
 import type { ConfirmResult, LinkLogEntry, ModEntry, ModStatus, SourceRecord } from "./model.ts";
 import { hmodHome } from "./paths.ts";
-import { loadSources, logLink, sourceRef, updateSources } from "./store.ts";
+import { loadSources, logLink, sourceRef, trustWarning, updateSources } from "./store.ts";
 
 /** Answers whether Herdr can load the mod in `dir`. `output` says why not. */
 export type ModCheck = (dir: string) => Promise<{ ok: boolean; output: string }>;
@@ -429,6 +429,7 @@ async function updateLinked(
       latest.commit = head;
       latest.files = files;
       delete latest.baseline_assumed;
+      delete latest.first_update_pending; // The person has now taken this repo's code once.
     });
   } catch (e: any) {
     const why = e?.message ?? String(e);
@@ -479,12 +480,14 @@ function refusal(item: InventoryItem, entry: ModEntry, force: boolean): string |
 }
 
 /** Updates one mod and says how it went. Whatever goes wrong comes back as a result, not a throw. */
-async function updateItem(item: InventoryItem, force: boolean, gh: GitHub, check: ModCheck, step: Step): Promise<UpdateResult> {
+async function updateItem(item: InventoryItem, force: boolean, gh: GitHub, check: ModCheck, step: Step, batch = false): Promise<UpdateResult> {
   const staging = home.staging();
   const failure = (outcome: UpdateOutcome, error: string): UpdateResult => ({ ...blank(item.name), ok: false, outcome, error });
   try {
     let sources = loadSources();
     const record = sources[item.name];
+    // Checked here too: a link made while Update all runs isn't in what it planned.
+    if (batch && record?.first_update_pending) return failure("refused", firstUpdateNote(record.repo));
     let head: string | null = null;
     let renamed: string[] = [];
     if (record && !linkRefusal(item) && !item.problem) {
@@ -562,8 +565,8 @@ export function confirmOne(name: string, via: LinkLogEntry["via"], deps: Pick<Up
       }
       const { repo, path, branch, repo_id, owner_id } = pinned;
       logLink({ event: "confirm", mod: name, repo, path, branch, via, offered_because: null, repo_id, owner_id });
-      sources[name] = pinned;
-      return { ok: true, mod: name, source: sourceRef(pinned), repo_id: repo_id!, owner_id: owner_id!, counts_as_edited: pinned.baseline_assumed === true };
+      sources[name] = { ...pinned, first_update_pending: true };
+      return { ok: true, mod: name, source: sourceRef(pinned), repo_id: repo_id!, owner_id: owner_id!, counts_as_edited: pinned.baseline_assumed === true, trust: trustWarning(repo) };
     });
     forgetCheck(name);
     return result;
@@ -583,9 +586,10 @@ export function updateAll(emit: (event: UpdateEvent) => void, deps: UpdateDeps =
     const gh = deps.gh ?? createGitHub();
     const check = deps.check ?? herdrCheck;
     const { mods } = await checkMods(gh);
-    const queue = mods.filter((m) => m.status === "update_available").map((m) => m.name);
+    const first = (m: CheckEntry) => m.status === "update_available" && m.first_update_pending;
+    const queue = mods.filter((m) => m.status === "update_available" && !first(m)).map((m) => m.name);
     const skipped = mods.flatMap((m): SkippedMod[] => {
-      const fallback = SKIP_REASON[m.status];
+      const fallback = first(m) ? "it needs updating by itself the first time" : SKIP_REASON[m.status];
       return fallback ? [{ mod: m.name, status: m.status, reason: m.message ?? m.note ?? fallback }] : [];
     });
     emit({ event: "plan", mods: queue, skipped });
@@ -595,7 +599,7 @@ export function updateAll(emit: (event: UpdateEvent) => void, deps: UpdateDeps =
     for (const mod of queue) {
       const item = items.get(mod);
       const result = item
-        ? await updateItem(item, false, gh, check, (step) => emit({ event: "step", mod, step }))
+        ? await updateItem(item, false, gh, check, (step) => emit({ event: "step", mod, step }), true)
         : { ...blank(mod), ok: false, outcome: "failed" as const, error: `${mod} isn't in the mods folder any more` };
       emit({ event: "result", mod, result });
       (result.outcome === "updated" ? summary.updated : result.ok ? summary.unchanged : summary.failed).push(mod);

@@ -32,6 +32,7 @@ describe("hmod link", () => {
       mod: "quota",
       linked: true,
       source: { repo: "someone/herdr-quota", path: "mods/quota", branch: null, commit: null },
+      trust: "someone, and anyone who later controls someone/herdr-quota, can run code on your computer.",
     });
     const record = sources().quota!;
     expect(record.repo).toBe("someone/herdr-quota");

@@ -171,6 +171,9 @@ function parseSource(text) {
   return { repo: parts.slice(0, 2).join("/"), path: parts.slice(2).join("/") || null };
 }
 
+/** What linking or confirming hands over. hmod says the same in its --json. */
+const trustLine = (repo) => `${repo.split("/")[0]}, and anyone who later controls ${repo}, can run code on your computer.`;
+
 function versions(m) {
   const out = [];
   if (m.latest_version && m.latest_version !== m.installed_version) {
@@ -180,10 +183,16 @@ function versions(m) {
   return out.join(" · ");
 }
 
-/** The one repo holding every file, if there's one, whatever partial matches sit beside it. Still only a copy, so the person confirms it. */
-function soleExact(m) {
-  const exact = (m.suggestions ?? []).filter((s) => s.exact);
-  return exact.length === 1 ? exact[0] : null;
+/** What Update all would install. A first update from a repo is left to the person. */
+const waiting = (m) => m.status === "update_available" && !m.first_update_pending;
+
+/** The line under an unlinked mod's name. An offer is only ever a possibility. */
+function unlinkedDetail(m) {
+  const offers = m.suggestions ?? [];
+  const missing = m.offer_gaps?.length > 0;
+  if (!offers.length) return missing ? "Where this mod came from isn't known, and the search may have missed it" : "Where this mod came from isn't known";
+  const offered = offers.length === 1 ? `${offers[0].repo}: not proven to be its source` : plural(offers.length, "possible source");
+  return missing ? `${offered} · this list may be incomplete` : offered;
 }
 
 const needsAttention = (m) =>
@@ -204,6 +213,7 @@ export default class ModUpdates extends View {
     this.linking = null; // the mod whose Link source is showing
     this.linkError = null;
     this.linkBusy = false;
+    this.trusting = null; // the link or confirm waiting for a yes: { mod, kind, repo, path }
     this.waited = 0;
     this.beats = 0;
     this.linkInput = InputState.new({ value: "", placeholder: "owner/repo" });
@@ -231,7 +241,7 @@ export default class ModUpdates extends View {
     const r = await hmod(["check", "--cached", "--json"]);
     const out = parsed(r.stdout);
     if (!r.ok || !out?.mods) return;
-    this.waiting = out.mods.filter((m) => m.status === "update_available").length;
+    this.waiting = out.mods.filter(waiting).length;
     cx.notify();
   }
 
@@ -331,6 +341,7 @@ export default class ModUpdates extends View {
     this.error = null;
     this.kind = job.kind;
     this.linking = null;
+    this.trusting = null;
     cx.notify();
     const failed = await startJob(job, args);
     if (failed) {
@@ -362,6 +373,7 @@ export default class ModUpdates extends View {
   toggleLink(m) {
     this.linking = this.linking === m.name ? null : m.name;
     this.linkError = null;
+    this.trusting = null;
     this.linkInput.set_value("");
     if (this.linking) this.linkInput.focus();
   }
@@ -373,7 +385,26 @@ export default class ModUpdates extends View {
       cx.notify();
       return;
     }
-    return this.link(cx, repo, path);
+    return this.askLink(cx, repo, path);
+  }
+
+  /** Nothing links or confirms until the person has read who they'd be trusting. */
+  askLink(cx, repo, path) {
+    this.linkError = null;
+    this.trusting = { mod: this.linking, kind: "link", repo, path };
+    cx.notify();
+  }
+
+  askConfirm(m, cx) {
+    this.trusting = { mod: m.name, kind: "confirm", repo: m.source_changed?.repo_now ?? m.source.repo };
+    cx.notify();
+  }
+
+  trust(cx) {
+    const ask = this.trusting;
+    this.trusting = null;
+    if (ask.kind === "link") return this.link(cx, ask.repo, ask.path);
+    return this.settleHold({ name: ask.mod }, cx, ["confirm", ask.mod, "--dialog", "--json"]);
   }
 
   async link(cx, repo, path) {
@@ -390,10 +421,6 @@ export default class ModUpdates extends View {
       return;
     }
     return this.check(cx); // What it's now linked to decides its status.
-  }
-
-  confirmAgain(m, cx) {
-    return this.settleHold(m, cx, ["confirm", m.name, "--dialog", "--json"]);
   }
 
   unlink(m, cx) {
@@ -493,7 +520,7 @@ export default class ModUpdates extends View {
       case "update_available": return ["Update available", t.accent];
       case "modified": return ["Edited locally", t.blocked];
       case "source_changed": return ["Source changed", t.blocked];
-      case "unlinked": return [soleExact(m) ? "Source found" : "No source known", t.muted];
+      case "unlinked": return [m.suggestions?.length ? "Possible source" : "No source known", t.muted];
       case "error": return ["Error", t.blocked];
       default: return ["Up to date", t.dim];
     }
@@ -507,12 +534,12 @@ export default class ModUpdates extends View {
     if (row) return versions(m);
     if (m.status === "error") return m.message;
     if (m.status === "source_changed") return m.note;
-    if (m.status === "unlinked" && soleExact(m)) return `${soleExact(m).repo}: confirm it before updating`;
-    if (m.status === "unlinked") return m.suggestions?.length ? `${plural(m.suggestions.length, "possible source")} found` : "Where this mod came from isn't known";
+    if (m.status === "unlinked") return unlinkedDetail(m);
     if (m.status === "modified") {
       const files = m.changed.slice(0, 3).join(", ") + (m.changed.length > 3 ? ", …" : "");
       return [files, m.update_available ? versions(m) || "An update exists" : m.remote_checked ? "No update to install" : ""].filter(Boolean).join(" · ");
     }
+    if (m.status === "update_available" && m.first_update_pending) return [versions(m), m.note].filter(Boolean).join(" · ");
     return versions(m);
   }
 
@@ -523,7 +550,7 @@ export default class ModUpdates extends View {
     if (row && row.state !== "failed" && row.state !== "skipped") return null;
     if (m.status === "source_changed") {
       return h_flex().flex_none().gap(8)
-        .child(this.button(t, `${id}-confirm`, "Confirm again", act((cx) => this.confirmAgain(m, cx)), { enabled: on }))
+        .child(this.button(t, `${id}-confirm`, "Confirm again", act((cx) => this.askConfirm(m, cx)), { enabled: on }))
         .child(this.button(t, `${id}-unlink`, "Unlink", act((cx) => this.unlink(m, cx)), { enabled: on }));
     }
     const updating = m.status === "modified" ? () => this.askUpdate(m) : act((cx) => this.update(m, cx));
@@ -531,27 +558,51 @@ export default class ModUpdates extends View {
     if (m.status === "update_available") return this.button(t, id, "Update", updating, { primary: true, enabled: on });
     // With nothing newer, updating over local edits would do nothing.
     if (m.status === "modified") return m.remote_checked && !m.update_available ? null : this.button(t, id, "Update", updating, { enabled: on });
-    if (m.status === "unlinked") return this.button(t, id, soleExact(m) ? "Confirm source" : "Link source", () => this.toggleLink(m), { enabled: on });
+    if (m.status === "unlinked") return this.button(t, id, "Link source", () => this.toggleLink(m), { enabled: on });
     if (m.status === "error") return this.button(t, id, "Retry", act((cx) => this.check(cx)), { enabled: on });
     return null;
   }
 
   linkPanel(t, m) {
     const on = !this.running() && !this.linkBusy;
+    const gaps = m.offer_gaps ?? [];
+    // Second line of the evidence: how the repo's folder stands against what matched.
+    const fact = (s, line, i) => div().text_size(11).text_color(i === 1 && s.commits_past_match > 0 ? t.blocked : t.dim).child(line);
     const offer = (s, i) => h_flex().flex_none().gap(8).items_center()
       .child(v_flex().flex_1().min_w(0)
         .child(div().truncate().text_color(t.foreground).child(`${s.repo} · ${s.path}`))
-        .child(div().truncate().text_size(11).text_color(t.dim).child(s.why)))
-      .child(this.button(t, `mu-offer-${i}`, "Link", act((cx) => this.link(cx, s.repo, s.path)), { primary: s === soleExact(m), enabled: on }));
+        .child(div().text_size(11).text_color(t.dim).child(s.why))
+        .children((s.evidence ?? []).map((line, j) => fact(s, line, j))))
+      .child(this.button(t, `mu-offer-${i}`, "Link", act((cx) => this.askLink(cx, s.repo, s.path)), { enabled: on }));
     return v_flex().flex_none().gap(8).pt(8).text_size(12)
       .when(Boolean(m.suggestions?.length), (el) => el.child(div().flex_none().text_color(t.muted)
-        .child("Matching files don't prove who made a mod: anyone can publish a copy. Link only a repo you recognise.")))
+        .child("Matching files don't prove who made a mod: anyone can publish a copy, and stars, age and owner can be faked too. Link only a repo you recognise.")))
+      .when(gaps.length > 0, (el) => el.child(v_flex().flex_none().gap(2).text_color(t.muted)
+        .child(div().child("This list may be incomplete."))
+        .children(gaps.map((g) => div().text_size(11).child(g.detail)))))
       .children((m.suggestions ?? []).map(offer))
       .child(h_flex().flex_none().gap(8).items_center()
         .child(Input.new(this.linkInput).flex_1().min_w(0).h(28).px(8).items_center().rounded(6).border(1)
           .border_color(t.input).bg(t.background).text_color(t.foreground))
         .child(this.button(t, "mu-link", "Link", act((cx) => this.linkTyped(cx)), { enabled: on })))
       .when(Boolean(this.linkError), (el) => el.child(div().text_color(t.blocked).child(this.linkError)));
+  }
+
+  /** The last word before a link or confirm: who this hands the computer to. Neither button is the easy way out. */
+  trustPanel(t, m) {
+    const ask = this.trusting;
+    const on = !this.running() && !this.linkBusy;
+    const question = ask.kind === "link" ? `Link ${m.title} to ${ask.repo}?` : `Trust ${ask.repo} as it is now?`;
+    return v_flex().id("mu-trust").flex_none().pt(8).gap(6).text_size(12)
+      .child(div().font_medium().text_color(t.foreground).child(question))
+      .child(div().text_color(t.foreground).child(trustLine(ask.repo)))
+      .child(div().text_color(t.muted).child(`Update all will leave ${m.title} out until you've updated it by itself once.`))
+      .child(h_flex().justify_end().gap(8)
+        .child(this.button(t, "mu-trust-no", "Cancel", (_e, cx) => {
+          this.trusting = null;
+          cx.notify();
+        }))
+        .child(this.button(t, "mu-trust-yes", ask.kind === "link" ? "Link it" : "Confirm", act((cx) => this.trust(cx)), { enabled: on })));
   }
 
   row(t, m) {
@@ -567,7 +618,8 @@ export default class ModUpdates extends View {
             .child(div().flex_none().text_size(12).text_color(color).child(status)))
           .when(Boolean(detail), (el) => el.child(div().text_size(12).text_color(t.dim).child(detail))))
         .when(button !== null, (el) => el.child(button)))
-      .when(this.linking === m.name, (el) => el.child(this.linkPanel(t, m)));
+      .when(this.linking === m.name, (el) => el.child(this.linkPanel(t, m)))
+      .when(this.trusting?.mod === m.name, (el) => el.child(this.trustPanel(t, m)));
   }
 
   /** A section that's folded until clicked. */
@@ -636,7 +688,7 @@ export default class ModUpdates extends View {
     if (props()?.bar) return this.renderBar(t);
     const mods = this.data?.mods ?? [];
     const free = !this.running() && !this.notSetUp;
-    const n = mods.filter((m) => m.status === "update_available").length;
+    const n = mods.filter(waiting).length;
     const shown = (m) => needsAttention(m) || this.rows[m.name];
     const attention = mods.filter(shown);
     const rest = mods.filter((m) => !shown(m));

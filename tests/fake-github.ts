@@ -26,6 +26,10 @@ export interface FakeRepo {
   divergedFrom?: string[];
   /** Commits that exist past the branch's tip, as after it's wound back: comparing from one says behind. */
   woundBackFrom?: string[];
+  /** It's a fork of this repo. `true`: a fork, but GitHub doesn't name the parent. */
+  forkOf?: string | true;
+  stars?: number;
+  created_at?: string;
 }
 
 export interface FakeRequest {
@@ -50,6 +54,11 @@ export class FakeGitHub {
   failing: { pattern: RegExp; status: number } | null = null;
   /** Replaces the base64 of a blob, to stand in for bytes that don't match their SHA. */
   corrupt: ((content: string) => string | null) | null = null;
+
+  /** What search says it has in all, past what it returns. */
+  searchTotal: number | null = null;
+  /** Search says it timed out before seeing everything. */
+  searchIncomplete = false;
 
   /** Old name -> new name. GitHub redirects these, for everything under the repo. */
   moved: Record<string, string> = {};
@@ -91,12 +100,13 @@ export class FakeGitHub {
     if (url.pathname === "/search/repositories") {
       const size = Number(url.searchParams.get("per_page") ?? 30);
       const start = (Number(url.searchParams.get("page") ?? 1) - 1) * size;
-      return ok({ items: this.search(url.searchParams.get("q") ?? "").slice(start, start + size) });
+      const found = this.search(url.searchParams.get("q") ?? "");
+      return ok({ total_count: this.searchTotal ?? found.length, incomplete_results: this.searchIncomplete, items: found.slice(start, start + size) });
     }
     const m = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)(?:\/(.*))?$/);
     const repo = m && this.repos[m[1]!];
     if (!m || !repo) return missing;
-    if (m[2] === undefined) return ok(repoDetails(m[1]!, repo));
+    if (m[2] === undefined) return ok({ ...repoDetails(m[1]!, repo), ...this.facts(repo), ...(typeof repo.forkOf === "string" ? { parent: { full_name: repo.forkOf } } : {}) });
     const rest = m[2];
     const head = repo.commits[0];
 
@@ -169,12 +179,17 @@ export class FakeGitHub {
     return { truncated: false, tree: [...tree, ...(recursive ? (c.oddities?.[dir] ?? []) : [])] };
   }
 
-  private search(q: string): { full_name: string; name: string }[] {
+  /** What GitHub sends about a repo, in search results and on its own page alike. */
+  private facts(r: FakeRepo) {
+    return { fork: r.forkOf !== undefined, stargazers_count: r.stars ?? 0, created_at: r.created_at ?? "2025-01-02T03:04:05Z" };
+  }
+
+  private search(q: string) {
     const term = q.replace("topic:herdr-mod", "").replace("fork:true", "").trim().toLowerCase();
     const words = term.split(/\s+/);
     return Object.entries(this.repos)
       .filter(([full, r]) => r.topic !== false && words.some((w) => full.toLowerCase().includes(w)))
-      .map(([full]) => ({ full_name: full, name: full.split("/")[1]! }));
+      .map(([full, r]) => ({ full_name: full, name: full.split("/")[1]!, ...this.facts(r) }));
   }
 
   /** Commits that changed anything under `path`: a commit is listed only if it differs from the next older. */

@@ -359,6 +359,8 @@ describe("rows", () => {
       const s = await start();
       expect(world.calls.some((c) => c[0] === "confirm")).toBe(false);
       await press(s, "mu-act-quota-confirm");
+      expect(world.calls.some((c) => c[0] === "confirm")).toBe(false);
+      await press(s, "mu-trust-yes");
       expect(world.calls.at(-1)).toEqual(["confirm", "quota", "--dialog", "--json"]);
       expect(world.jobs).toEqual([["check", "--json"]]);
     });
@@ -376,6 +378,7 @@ describe("rows", () => {
       world.answers["confirm quota"] = { code: 1, stdout: JSON.stringify({ ok: false, error: "GitHub said 500" }), stderr: "" };
       const s = await start();
       await press(s, "mu-act-quota-confirm");
+      await press(s, "mu-trust-yes");
       expect(rowText(s, "quota")).toContain("GitHub said 500");
       expect(byId(tree(s), "mu-act-quota-unlink")).toBeTruthy();
       expect(world.jobs).toEqual([]);
@@ -426,6 +429,7 @@ describe("Link source", () => {
   const typed = async (s: any, text: string) => {
     s.v.linkInput.set_value(text);
     await press(s, "mu-link");
+    if (byId(tree(s), "mu-trust-yes")) await press(s, "mu-trust-yes");
   };
 
   test("shows suggestions and a field, and linking one checks again", async () => {
@@ -434,6 +438,8 @@ describe("Link source", () => {
     expect(rowText(s, "quota")).toContain("same files as a commit");
     world.answers["link quota"] = linked;
     await press(s, "mu-offer-0");
+    expect(world.calls.some((c) => c[0] === "link")).toBe(false);
+    await press(s, "mu-trust-yes");
     expect(world.calls.at(-1)).toEqual(["link", "quota", "a/quota", "--path", "mods/q", "--dialog", "--json"]);
     expect(world.jobs).toEqual([["check", "--json"]]);
     expect(byId(tree(s), "mu-link")).toBeUndefined();
@@ -452,6 +458,7 @@ describe("Link source", () => {
     s.v.linkInput.set_value("me/my-mods");
     s.v.linkInput.handlers.submit(null, s.cx);
     await s.cx.settle();
+    await press(s, "mu-trust-yes");
     expect(world.calls.at(-1)).toEqual(["link", "quota", "me/my-mods", "--dialog", "--json"]);
   });
 
@@ -780,44 +787,147 @@ describe("a job in a real shell", () => {
   });
 });
 
-describe("confirming a source", () => {
-  const exact = { repo: "a/quota", path: "mods/q", why: "Every file matches commit abc", exact: true, commit: "abc" };
+describe("an offer is only a possibility", () => {
+  const exact = {
+    repo: "a/quota", path: "mods/q", why: "Every file matches commit abc", exact: true, commit: "abc", commits_past_match: 3,
+    evidence: ["Owner a · created 2025-01-02 · 4 stars · not a fork", "The mod's folder has changed since that commit: 3 newer commits."],
+  };
   const other = { ...exact, repo: "b/quota" };
 
-  test("one exact match asks for a confirmation, naming the repo", async () => {
-    world.cached = checked([entry("quota", "unlinked", { suggestions: [exact] })]);
+  /** Every button's `primary` as drawn: the mod's own helper, watched. */
+  const pressable = (s: any) => {
+    const seen: Record<string, boolean> = {};
+    const real = s.v.button;
+    s.v.button = function (t: any, id: string, label: string, onClick: any, o: any = {}) {
+      seen[id] = o.primary === true;
+      return real.call(this, t, id, label, onClick, o);
+    };
+    tree(s);
+    s.v.button = real;
+    return seen;
+  };
+
+  test.each([
+    ["one exact match", [exact]],
+    ["an exact match beside a partial one", [exact, { ...other, exact: false }]],
+    ["several exact matches", [exact, other]],
+    ["only a partial match", [{ ...exact, exact: false }]],
+  ])("%s: says Possible source, never that one was found, and no button is primary", async (_name, suggestions) => {
+    world.cached = checked([entry("quota", "unlinked", { suggestions })]);
     const s = await start();
-    expect(rowText(s, "quota")).toContain("Source found");
-    expect(rowText(s, "quota")).toContain("a/quota: confirm it before updating");
-    expect(textOf(byId(tree(s), "mu-act-quota"))).toContain("Confirm source");
+    expect(rowText(s, "quota")).toContain("Possible source");
+    expect(textOf(byId(tree(s), "mu-act-quota"))).toContain("Link source");
+    await press(s, "mu-act-quota");
+    await press(s, "mu-offer-0");
+    const text = rowText(s, "quota");
+    for (const words of ["Source found", "Confirm source", "confirm it before updating"]) expect(text).not.toContain(words);
+    const buttons = pressable(s);
+    expect(Object.keys(buttons)).toEqual(expect.arrayContaining(["mu-act-quota", "mu-offer-0", "mu-trust-yes", "mu-trust-no"]));
+    expect(Object.entries(buttons).filter(([id, primary]) => primary && id !== "mu-all")).toEqual([]);
     expect(textOf(tree(s))).toContain("Update all (0)");
   });
 
-  test("the panel says what a match doesn't prove, and nothing links until Link", async () => {
+  test("the panel shows the evidence, and says what none of it proves", async () => {
     world.cached = checked([entry("quota", "unlinked", { suggestions: [exact] })]);
     const s = await start();
     await press(s, "mu-act-quota");
-    expect(rowText(s, "quota")).toContain("anyone can publish a copy");
+    const text = rowText(s, "quota");
+    expect(text).toContain("anyone can publish a copy");
+    expect(text).toContain("can be faked");
+    expect(text).toContain("Owner a · created 2025-01-02 · 4 stars · not a fork");
+    expect(text).toContain("has changed since that commit");
     expect(world.calls.some((c) => c[0] === "link")).toBe(false);
   });
 
-  test("a partial match beside the exact one doesn't hide it", async () => {
-    world.cached = checked([entry("quota", "unlinked", { suggestions: [exact, { ...other, exact: false }] })]);
+  test("offers saved before there was evidence still draw", async () => {
+    const { evidence: _, commits_past_match: __, ...old } = exact;
+    world.cached = checked([entry("quota", "unlinked", { suggestions: [old] })]);
     const s = await start();
-    expect(rowText(s, "quota")).toContain("a/quota: confirm it before updating");
-    expect(textOf(byId(tree(s), "mu-act-quota"))).toContain("Confirm source");
+    await press(s, "mu-act-quota");
+    expect(rowText(s, "quota")).toContain("a/quota · mods/q");
   });
 
-  test("several matches, or a partial one, stay as Link source", async () => {
-    world.cached = checked([
-      entry("two", "unlinked", { suggestions: [exact, other] }),
-      entry("part", "unlinked", { suggestions: [{ ...exact, exact: false }] }),
-    ]);
+  test("a list that may be incomplete says so on the row and in the panel, with why", async () => {
+    const gaps = [{ kind: "repo_failed", detail: "hmod couldn't read bad/quota, so skipped it." }];
+    world.cached = checked([entry("quota", "unlinked", { suggestions: [exact], offer_gaps: gaps })]);
     const s = await start();
-    for (const mod of ["two", "part"]) {
-      expect(rowText(s, mod)).toContain("No source known");
-      expect(textOf(byId(tree(s), `mu-act-${mod}`))).toContain("Link source");
-    }
+    expect(rowText(s, "quota")).toContain("this list may be incomplete");
+    await press(s, "mu-act-quota");
+    expect(rowText(s, "quota")).toContain("This list may be incomplete.");
+    expect(rowText(s, "quota")).toContain("hmod couldn't read bad/quota");
+  });
+
+  test("no offers and a gap: it doesn't claim nothing's out there", async () => {
+    const gaps = [{ kind: "rate_limit", detail: "GitHub's rate limit stopped hmod reading 2 repos." }];
+    world.cached = checked([entry("quota", "unlinked", { offer_gaps: gaps })]);
+    const s = await start();
+    expect(rowText(s, "quota")).toContain("No source known");
+    expect(rowText(s, "quota")).toContain("may have missed it");
+  });
+
+  test("no gaps: no note", async () => {
+    world.cached = checked([entry("quota", "unlinked", { suggestions: [exact, other] })]);
+    const s = await start();
+    await press(s, "mu-act-quota");
+    expect(rowText(s, "quota").toLowerCase()).not.toContain("may be incomplete");
+  });
+
+  test("the confirmation says who's being trusted, for an offer and for a typed repo", async () => {
+    world.cached = checked([entry("quota", "unlinked", { suggestions: [exact] })]);
+    const s = await start();
+    await press(s, "mu-act-quota");
+    await press(s, "mu-offer-0");
+    expect(rowText(s, "quota")).toContain("a, and anyone who later controls a/quota, can run code on your computer.");
+    await press(s, "mu-trust-no");
+    expect(byId(tree(s), "mu-trust")).toBeUndefined();
+    expect(world.calls.some((c) => c[0] === "link")).toBe(false);
+    s.v.linkInput.set_value("me/mine");
+    await press(s, "mu-link");
+    expect(rowText(s, "quota")).toContain("me, and anyone who later controls me/mine, can run code on your computer.");
+  });
+
+  test("Confirm again names whoever holds the repo now", async () => {
+    const change = { what: ["owner"], detail: "o/r has a new owner", repo_now: "x/r" };
+    world.cached = checked([entry("quota", "source_changed", { source: { repo: "o/r" }, source_changed: change, note: change.detail })]);
+    const s = await start();
+    await press(s, "mu-act-quota-confirm");
+    expect(rowText(s, "quota")).toContain("x, and anyone who later controls x/r, can run code on your computer.");
+    expect(pressable(s)["mu-trust-yes"]).toBe(false);
+  });
+});
+
+describe("a first update", () => {
+  const first = (name: string) => available(name, { first_update_pending: true, note: `First update from a/${name}: update this mod by itself to go ahead. Update all leaves it out until then` });
+
+  test("isn't counted by Update all, and the row says why and keeps its Update", async () => {
+    world.cached = checked([first("new"), available("old")]);
+    const s = await start();
+    expect(textOf(tree(s))).toContain("Update all (1)");
+    expect(rowText(s, "new")).toContain("Update all leaves it out");
+    expect(rowText(s, "new")).toContain("1.0.0 → 1.2.0");
+    await press(s, "mu-act-new");
+    expect(world.jobs).toEqual([["update", "new", "--json"]]);
+  });
+
+  test("with nothing else waiting, Update all has nothing to do", async () => {
+    world.cached = checked([first("new")]);
+    expect(textOf(tree(await start()))).toContain("Update all (0)");
+  });
+
+  test("skipped by Update all, the row gives the reason and can still update", async () => {
+    world.cached = checked([first("new"), available("old")]);
+    const s = await start();
+    await press(s, "mu-all");
+    world.log = logOf({ kind: "all" }, { event: "plan", mods: ["old"], skipped: [{ mod: "new", status: "update_available", reason: "First update from a/new" }] });
+    await poll(s);
+    expect(rowText(s, "new")).toContain("First update from a/new");
+    expect(byId(tree(s), "mu-act-new")).toBeTruthy();
+  });
+
+  test("the status bar counts only what Update all would install", async () => {
+    world.props = { bar: true };
+    world.cached = checked([first("new"), available("old")]);
+    expect(textOf(tree(await start()))).toContain("Mod updates (1)");
   });
 });
 
