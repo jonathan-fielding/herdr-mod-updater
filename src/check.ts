@@ -228,11 +228,13 @@ async function inspect(gh: GitHub, item: InventoryItem, sources: Sources, now: s
     return { ...base, upstream: await inspectLinked(gh, known) };
   }
   const files = hashTree(item.dir);
-  const { match, suggestions } = await findSource(gh, { name: item.name, title: item.title, files });
-  if (!match) return { ...base, suggestions };
-  const fresh: SourceRecord = { repo: match.repo, path: match.path, branch: null, commit: match.commit, files };
-  const linked = await updateSources((latest) => (latest[item.name] ??= fresh));
-  return { ...base, upstream: await inspectLinked(gh, linked) };
+  return { ...base, suggestions: await findSource(gh, { name: item.name, title: item.title, files }) };
+}
+
+/** Why the last check offered this source, for the link log; null if it wasn't offered. */
+export function offeredBecause(mod: string, repo: string, path: string): string | null {
+  const offers = loadChecks().mods[mod]?.suggestions ?? [];
+  return offers.find((s) => s.repo === repo && s.path === path)?.why ?? null;
 }
 
 function localVersion(dir: string): string | null {
@@ -315,7 +317,7 @@ function present(item: InventoryItem, sources: Sources, saved: Saved | undefined
     : { ...entry, status: "error", message: saved.error, remote_checked: false };
 }
 
-/** Asks GitHub and origin about every mod, links what can be linked, and saves the results. */
+/** Asks GitHub and origin about every mod, finds possible sources, and saves the results. Links nothing. */
 export async function checkMods(gh: GitHub = createGitHub()): Promise<CheckResult> {
   const items = scanMods();
   const sources = loadSources();
@@ -331,7 +333,7 @@ export async function checkMods(gh: GitHub = createGitHub()): Promise<CheckResul
     }),
   );
 
-  const latest = loadSources(); // Now with the links just made.
+  const latest = loadSources(); // Now with the baselines just worked out.
   const file: CheckFile = { last_checked: now, mods: Object.create(null) };
   const mods = items.map((item, i) => {
     const result = results[i];

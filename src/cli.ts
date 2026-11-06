@@ -1,19 +1,20 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 import pkg from "../package.json" with { type: "json" };
-import { cachedCheck, checkMods, type CheckEntry, type CheckResult } from "./check.ts";
+import { offeredBecause, cachedCheck, checkMods, type CheckEntry, type CheckResult } from "./check.ts";
 import { HmodError, UsageError } from "./errors.ts";
 import { linkRefusal, listMods, scanMods } from "./inventory.ts";
 import { installMod } from "./modinstall.ts";
 import { updateAll, updateOne, type UpdateEvent, type UpdateResult } from "./update.ts";
-import type { ErrorResult, LinkResult, ListResult, ModEntry, SourceRef, UnlinkResult } from "./model.ts";
-import { sourceRef, updateSources } from "./store.ts";
+import type { ErrorResult, LinkLogEntry, LinkResult, ListResult, ModEntry, SourceRef, UnlinkResult } from "./model.ts";
+import { logLink, sourceRef, updateSources } from "./store.ts";
 
 const HELP = `hmod ${pkg.version}: the mods in your Herdr app, and where they came from
 
   hmod list [--json]                              every installed mod and its status
-  hmod check [--cached] [--json]                  ask GitHub what's new, finding unlinked mods' sources
-                                                  by their content. --cached shows the last answer,
+  hmod check [--cached] [--json]                  ask GitHub what's new, and offer possible sources for
+                                                  unlinked mods by their content. It never links one:
+                                                  that's hmod link. --cached shows the last answer,
                                                   with no network call
   hmod link <mod> <owner/repo> [--path mods/x] [--branch b] [--json]
                                                   record where a mod came from. Edits are kept safe:
@@ -44,7 +45,9 @@ function repoPath(path: string): string {
   return clean;
 }
 
-async function link(mod: string, repo: string, opts: { path?: string; branch?: string }): Promise<LinkResult> {
+type Via = LinkLogEntry["via"];
+
+async function link(mod: string, repo: string, opts: { path?: string; branch?: string }, via: Via): Promise<LinkResult> {
   if (!REPO.test(repo) || repo.endsWith("/.") || repo.endsWith("/..")) {
     throw new UsageError(`bad repo "${repo}": it should look like owner/repo`);
   }
@@ -67,14 +70,20 @@ async function link(mod: string, repo: string, opts: { path?: string; branch?: s
       throw new HmodError(`${mod} is already linked to ${existing.repo}: run \`hmod unlink ${mod}\` first`);
     }
     const source: SourceRef = { repo, path, branch, commit: null };
+    logLink({ event: "link", mod, repo, path, branch, via, offered_because: offeredBecause(mod, repo, path) });
     sources[mod] = { ...source, files: {} }; // Nothing from disk: it could be edits. A check fills this in.
     return { ok: true, mod, source, linked: true };
   });
 }
 
-function unlink(mod: string): Promise<UnlinkResult> {
+function unlink(mod: string, via: Via): Promise<UnlinkResult> {
   return updateSources((sources) => {
-    const unlinked = sources[mod] !== undefined;
+    const existing = sources[mod];
+    const unlinked = existing !== undefined;
+    if (existing) {
+      const { repo, path, branch } = existing;
+      logLink({ event: "unlink", mod, repo, path, branch, via, offered_because: null });
+    }
     delete sources[mod];
     return { ok: true, mod, unlinked };
   });
@@ -132,6 +141,7 @@ function parse(args: string[]) {
         cached: { type: "boolean" },
         force: { type: "boolean" },
         all: { type: "boolean" },
+        dialog: { type: "boolean" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
       },
@@ -155,6 +165,8 @@ async function main(args: string[]): Promise<void> {
   };
 
   if (values.cached && command !== "check") throw new UsageError("--cached only goes with hmod check");
+  if (values.dialog && command !== "link" && command !== "unlink") throw new UsageError("--dialog only goes with hmod link and unlink");
+  const via: Via = values.dialog ? "dialog" : "terminal";
   for (const flag of ["force", "all"] as const) {
     if (values[flag] && command !== "update") throw new UsageError(`--${flag} only goes with hmod update`);
   }
@@ -173,7 +185,7 @@ async function main(args: string[]): Promise<void> {
       if (!mod || !repo || more.length) {
         throw new UsageError("usage: hmod link <mod> <owner/repo> [--path mods/x] [--branch b] [--json]");
       }
-      return print(await link(mod, repo, values), (r) => {
+      return print(await link(mod, repo, values, via), (r) => {
         const line = `${r.linked ? "linked" : "already linked"}: ${r.mod} -> ${r.source.repo} ${r.source.path}${r.source.branch ? ` (${r.source.branch})` : ""}`;
         return r.linked ? `${line}\nedits are kept safe, the first check works out the version` : line;
       });
@@ -182,7 +194,7 @@ async function main(args: string[]): Promise<void> {
       noFlags("path", "branch");
       const [mod, ...more] = rest;
       if (!mod || more.length) throw new UsageError("usage: hmod unlink <mod> [--json]");
-      return print(await unlink(mod), (r) => `${r.unlinked ? "unlinked" : "wasn't linked"}: ${r.mod}`);
+      return print(await unlink(mod, via), (r) => `${r.unlinked ? "unlinked" : "wasn't linked"}: ${r.mod}`);
     }
     case "update": {
       noFlags("path", "branch");

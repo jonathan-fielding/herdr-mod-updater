@@ -105,6 +105,20 @@ export interface LinkResult {
   linked: boolean;
 }
 
+/** A line of links.jsonl. */
+export interface LinkLogEntry {
+  at: string;
+  event: "link" | "unlink";
+  mod: string;
+  repo: string;
+  path: string;
+  branch: string | null;
+  /** What did it. Only a person can link: the dialog or the terminal. */
+  via: "dialog" | "terminal";
+  /** Why the last check offered this source. null: typed by hand, or (unlink) not applicable. */
+  offered_because: string | null;
+}
+
 /** `hmod unlink --json` */
 export interface UnlinkResult {
   ok: true;

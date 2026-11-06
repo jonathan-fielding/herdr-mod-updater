@@ -16,6 +16,8 @@ export interface FakeRepo {
   commits: FakeCommit[];
   /** Search only finds repos by this topic. Default true. */
   topic?: boolean;
+  /** GitHub cut this repo's tree short. */
+  truncated?: boolean;
 }
 
 export interface FakeRequest {
@@ -70,7 +72,11 @@ export class FakeGitHub {
   private route(url: URL, method: string): { ok: boolean; status: number; bodyJson?: unknown } {
     const ok = (bodyJson: unknown) => ({ ok: true, status: 200, bodyJson });
     const missing = { ok: false, status: 404 };
-    if (url.pathname === "/search/repositories") return ok({ items: this.search(url.searchParams.get("q") ?? "") });
+    if (url.pathname === "/search/repositories") {
+      const size = Number(url.searchParams.get("per_page") ?? 30);
+      const start = (Number(url.searchParams.get("page") ?? 1) - 1) * size;
+      return ok({ items: this.search(url.searchParams.get("q") ?? "").slice(start, start + size) });
+    }
     const m = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/(.*)$/);
     const repo = m && this.repos[m[1]!];
     if (!m || !repo) return missing;
@@ -92,6 +98,11 @@ export class FakeGitHub {
     if (rest.startsWith("git/trees/")) {
       const want = rest.slice("git/trees/".length);
       const recursive = url.searchParams.get("recursive") === "1";
+      if (want === "HEAD") {
+        if (!head) return missing;
+        const tree = Object.entries(head.files).map(([path, content]) => ({ path, mode: "100644", type: "blob", sha: blob(content) }));
+        return ok({ truncated: repo.truncated === true, tree });
+      }
       const atCommit = repo.commits.find((c) => c.sha === want);
       if (atCommit) return ok(this.gitTree(atCommit, "", false));
       for (const c of repo.commits) {

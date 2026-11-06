@@ -379,7 +379,7 @@ describe("Link source", () => {
     expect(rowText(s, "quota")).toContain("same files as a commit");
     world.answers["link quota"] = linked;
     await press(s, "mu-offer-0");
-    expect(world.calls.at(-1)).toEqual(["link", "quota", "a/quota", "--path", "mods/q", "--json"]);
+    expect(world.calls.at(-1)).toEqual(["link", "quota", "a/quota", "--path", "mods/q", "--dialog", "--json"]);
     expect(world.jobs).toEqual([["check", "--json"]]);
     expect(byId(tree(s), "mu-link")).toBeUndefined();
   });
@@ -388,7 +388,7 @@ describe("Link source", () => {
     const s = await opened();
     world.answers["link quota"] = linked;
     await typed(s, " me/my-mods ");
-    expect(world.calls.at(-1)).toEqual(["link", "quota", "me/my-mods", "--json"]);
+    expect(world.calls.at(-1)).toEqual(["link", "quota", "me/my-mods", "--dialog", "--json"]);
   });
 
   test("Enter in the field links too", async () => {
@@ -397,14 +397,14 @@ describe("Link source", () => {
     s.v.linkInput.set_value("me/my-mods");
     s.v.linkInput.handlers.submit(null, s.cx);
     await s.cx.settle();
-    expect(world.calls.at(-1)).toEqual(["link", "quota", "me/my-mods", "--json"]);
+    expect(world.calls.at(-1)).toEqual(["link", "quota", "me/my-mods", "--dialog", "--json"]);
   });
 
   test("a pasted GitHub folder URL gives the repo and its folder", async () => {
     const s = await opened();
     world.answers["link quota"] = linked;
     await typed(s, "https://github.com/me/my-mods/tree/main/mods/other/");
-    expect(world.calls.at(-1)).toEqual(["link", "quota", "me/my-mods", "--path", "mods/other", "--json"]);
+    expect(world.calls.at(-1)).toEqual(["link", "quota", "me/my-mods", "--path", "mods/other", "--dialog", "--json"]);
   });
 
   test("something that isn't a repo doesn't reach hmod", async () => {
@@ -722,6 +722,47 @@ describe("a job in a real shell", () => {
     await press(s, "mu-all");
     await until(s, () => !s.v.running());
     expect(textOf(tree(s))).toContain("needs the hmod CLI");
+  });
+});
+
+describe("confirming a source", () => {
+  const exact = { repo: "a/quota", path: "mods/q", why: "Every file matches commit abc", exact: true, commit: "abc" };
+  const other = { ...exact, repo: "b/quota" };
+
+  test("one exact match asks for a confirmation, naming the repo", async () => {
+    world.cached = checked([entry("quota", "unlinked", { suggestions: [exact] })]);
+    const s = await start();
+    expect(rowText(s, "quota")).toContain("Source found");
+    expect(rowText(s, "quota")).toContain("a/quota: confirm it before updating");
+    expect(textOf(byId(tree(s), "mu-act-quota"))).toContain("Confirm source");
+    expect(textOf(tree(s))).toContain("Update all (0)");
+  });
+
+  test("the panel says what a match doesn't prove, and nothing links until Link", async () => {
+    world.cached = checked([entry("quota", "unlinked", { suggestions: [exact] })]);
+    const s = await start();
+    await press(s, "mu-act-quota");
+    expect(rowText(s, "quota")).toContain("anyone can publish a copy");
+    expect(world.calls.some((c) => c[0] === "link")).toBe(false);
+  });
+
+  test("a partial match beside the exact one doesn't hide it", async () => {
+    world.cached = checked([entry("quota", "unlinked", { suggestions: [exact, { ...other, exact: false }] })]);
+    const s = await start();
+    expect(rowText(s, "quota")).toContain("a/quota: confirm it before updating");
+    expect(textOf(byId(tree(s), "mu-act-quota"))).toContain("Confirm source");
+  });
+
+  test("several matches, or a partial one, stay as Link source", async () => {
+    world.cached = checked([
+      entry("two", "unlinked", { suggestions: [exact, other] }),
+      entry("part", "unlinked", { suggestions: [{ ...exact, exact: false }] }),
+    ]);
+    const s = await start();
+    for (const mod of ["two", "part"]) {
+      expect(rowText(s, mod)).toContain("No source known");
+      expect(textOf(byId(tree(s), `mu-act-${mod}`))).toContain("Link source");
+    }
   });
 });
 

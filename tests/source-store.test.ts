@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { gitBlobSha, hashTree } from "../src/fsutil.ts";
-import type { LinkResult, Sources, UnlinkResult } from "../src/model.ts";
+import type { LinkLogEntry, LinkResult, Sources, UnlinkResult } from "../src/model.ts";
 import { errorOf, fixtureHome, type Homes } from "./helpers.ts";
 
 let h: Homes;
@@ -12,6 +12,9 @@ beforeEach(() => {
 afterEach(() => h.cleanup());
 
 const sources = (): Sources => JSON.parse(readFileSync(join(h.hmod, "sources.json"), "utf8"));
+
+const linkLog = (): LinkLogEntry[] =>
+  readFileSync(join(h.hmod, "links.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
 
 /** Linked, with the baseline a check would have worked out. */
 function resolved(mod: string, dir: string): void {
@@ -146,7 +149,8 @@ describe("sources.json", () => {
     );
     expect(await Promise.all(procs.map((p) => p.exited))).toEqual(names.map(() => 0));
     expect(Object.keys(sources()).sort()).toEqual(names);
-    expect(readdirSync(h.hmod)).toEqual(["sources.json"]);
+    expect(readdirSync(h.hmod).sort()).toEqual(["links.jsonl", "sources.json"]);
+    expect(linkLog().map((e) => e.mod).sort()).toEqual(names);
   });
 
   test("a mod called like an Object property is an ordinary name", () => {
@@ -194,4 +198,50 @@ test("--version, --help and unknown commands", () => {
   expect(h.run("--help").stdout).toContain("hmod link");
   expect(h.run("nonsense").code).toBe(2);
   expect(h.run("list", "--path", "x").code).toBe(2);
+});
+
+describe("the link log", () => {
+  test("a link says what, where and how, and an unlink says what it forgot", () => {
+    h.mod("quota", { "main.js": "x" });
+    h.json("link", "quota", "someone/herdr-quota", "--path", "mods/q", "--branch", "dev");
+    h.json("unlink", "quota");
+    const [linked, unlinked] = linkLog();
+    expect(linked).toMatchObject({ event: "link", mod: "quota", repo: "someone/herdr-quota", path: "mods/q", branch: "dev", via: "terminal", offered_because: null });
+    expect(unlinked).toMatchObject({ event: "unlink", mod: "quota", repo: "someone/herdr-quota", path: "mods/q", via: "terminal" });
+    expect(Date.parse(linked!.at)).toBeGreaterThan(0);
+  });
+
+  test("--dialog says the dialog did it", () => {
+    h.mod("quota", { "main.js": "x" });
+    h.json("link", "quota", "someone/herdr-quota", "--dialog");
+    expect(linkLog()[0]!.via).toBe("dialog");
+  });
+
+  test("a link the last check offered keeps why it was offered", () => {
+    h.mod("quota", { "main.js": "x" });
+    const offer = { repo: "someone/herdr-quota", path: "mods/quota", why: "Every file matches commit abc", exact: true, commit: "abc" };
+    mkdirSync(h.hmod, { recursive: true });
+    writeFileSync(join(h.hmod, "check.json"), JSON.stringify({ last_checked: null, mods: { quota: { suggestions: [offer] } } }));
+    h.json("link", "quota", "someone/herdr-quota");
+    expect(linkLog()[0]!.offered_because).toBe(offer.why);
+  });
+
+  test("nothing changed, nothing logged", () => {
+    h.mod("quota", { "main.js": "x" });
+    h.json("link", "quota", "someone/herdr-quota");
+    h.json("link", "quota", "someone/herdr-quota");
+    h.json("unlink", "never-linked");
+    expect(linkLog()).toHaveLength(1);
+  });
+
+  test("a link that can't be logged doesn't happen", () => {
+    h.mod("quota", { "main.js": "x" });
+    mkdirSync(join(h.hmod, "links.jsonl"), { recursive: true });
+    expect(h.run("link", "quota", "someone/herdr-quota").code).not.toBe(0);
+    expect(existsSync(join(h.hmod, "sources.json"))).toBe(false);
+  });
+
+  test("--dialog is refused where it means nothing", () => {
+    expect(h.run("list", "--dialog").code).not.toBe(0);
+  });
 });
